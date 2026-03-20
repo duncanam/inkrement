@@ -79,8 +79,29 @@ struct PullRequest {
 }
 
 impl PullRequest {
+    /// Fetch the git diff for a specific pull request
     fn fetch_diff(&self) -> Result<String> {
-        todo!()
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "diff",
+                &self.number.to_string(),
+                "--repo",
+                &self.repo_name,
+            ])
+            .output()
+            .wrap_err("failed to run gh CLI while attempting to get git diff")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "while getting git diff, gh pr diff failed for {}#{}: {stderr}",
+                self.repo_name,
+                self.number
+            ));
+        }
+
+        String::from_utf8(output.stdout).wrap_err("gh pr diff returned invalid UTF-8")
     }
 }
 
