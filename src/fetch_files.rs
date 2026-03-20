@@ -33,17 +33,18 @@ fn fetch_file_at_ref(repo_name: &str, path: &str, git_ref: &str) -> Result<Strin
             "Accept: application/vnd.github.raw+json",
         ])
         .output()
-        .wrap_err("failed to run gh CLI")?;
+        .wrap_err("failed to run gh CLI while attempting to fetch file at ref")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(eyre!(
-            "gh api failed for {repo_name}/{path}@{git_ref}: {stderr}"
+            "failed to fetch file at ref due to gh api failing for {repo_name}/{path}@{git_ref}: {stderr}"
         ));
     }
 
-    String::from_utf8(output.stdout)
-        .wrap_err_with(|| format!("non-UTF-8 content in {path}@{git_ref}"))
+    String::from_utf8(output.stdout).wrap_err_with(|| {
+        format!("failed to fetch file at ref due to non-UTF-8 content in {path}@{git_ref}")
+    })
 }
 
 impl PullRequest {
