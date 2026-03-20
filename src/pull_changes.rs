@@ -109,3 +109,72 @@ impl PullRequests {
         Ok(Self(prs))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_search_response() {
+        let json = r#"{
+            "items": [
+                {"number": 42, "repository_url": "https://api.github.com/repos/acme/widgets"},
+                {"number": 99, "repository_url": "https://api.github.com/repos/acme/api"}
+            ]
+        }"#;
+
+        let response: SearchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.items.len(), 2);
+        assert_eq!(response.items[0].number, 42);
+        assert_eq!(response.items[1].number, 99);
+    }
+
+    #[test]
+    fn parse_search_response_empty() {
+        let json = r#"{"items": []}"#;
+
+        let response: SearchResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.items.len(), 0);
+    }
+
+    #[test]
+    fn extract_repo_name() {
+        let item = SearchPullRequest {
+            number: 42,
+            repository_url: "https://api.github.com/repos/acme/widgets".to_string(),
+        };
+
+        assert_eq!(item.get_repo_name().unwrap(), "acme/widgets");
+    }
+
+    #[test]
+    fn extract_repo_name_bad_url() {
+        let item = SearchPullRequest {
+            number: 42,
+            repository_url: "https://example.com/unexpected".to_string(),
+        };
+
+        assert!(item.get_repo_name().is_err());
+    }
+
+    #[test]
+    fn parse_pull_request() {
+        let json = r#"{
+            "number": 42,
+            "title": "Add widget endpoint",
+            "url": "https://github.com/acme/widgets/pull/42",
+            "headRefName": "feature/widgets",
+            "headRefOid": "abc123def456",
+            "baseRefName": "main",
+            "baseRefOid": "789fed321cba"
+        }"#;
+
+        let pr: PullRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.title, "Add widget endpoint");
+        assert_eq!(pr.head_ref_name, "feature/widgets");
+        assert_eq!(pr.head_ref_oid, "abc123def456");
+        assert_eq!(pr.base_ref_name, "main");
+        assert_eq!(pr.base_ref_oid, "789fed321cba");
+    }
+}
