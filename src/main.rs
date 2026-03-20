@@ -1,7 +1,8 @@
 use clap::Parser;
+use color_eyre::eyre::Result;
 
 mod cli;
 
-fn main() {
-    cli::Cli::parse().run();
+fn main() -> Result<()> {
+    cli::Cli::parse().run()
 }

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use color_eyre::eyre::Result;
 
 #[derive(Parser)]
 #[command(
@@ -24,7 +25,7 @@ enum Command {
 
 impl Cli {
     /// Runs the inkcrement CLI logic
-    pub fn run(self) {
+    pub fn run(self) -> Result<()> {
         match self.command {
             Command::Sync => {
                 todo!("implement sync")
