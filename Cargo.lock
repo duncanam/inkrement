@@ -543,6 +543,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "enum-ordinalize"
 version = "4.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1189,6 +1198,7 @@ dependencies = [
  "tracing-subscriber",
  "typst",
  "typst-pdf",
+ "unidiff",
 ]
 
 [[package]]
@@ -2857,6 +2867,16 @@ name = "unicode-vo"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1d386ff53b415b7fe27b50bb44679e2cc4660272694b7b6f3326d8480823a94"
+
+[[package]]
+name = "unidiff"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3ae26d2e6582eb32eff85cffebf74d20b6510e8b558bbac3a23b48965cf952f"
+dependencies = [
+ "encoding_rs",
+ "regex",
+]
 
 [[package]]
 name = "unsafe-libyaml"
