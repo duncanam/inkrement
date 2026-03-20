@@ -67,7 +67,7 @@ struct PullRequestResponse {
 /// This differs from PullRequestResponse due to requiring the repo_name which is not in the JSON
 /// payload delivered by Github and requires parsing
 #[derive(Debug)]
-struct PullRequest {
+pub(crate) struct PullRequest {
     number: u32,
     title: String,
     repo_name: String,
@@ -80,7 +80,7 @@ struct PullRequest {
 
 impl PullRequest {
     /// Fetch the git diff for a specific pull request
-    fn fetch_diff(&self) -> Result<String> {
+    pub(crate) fn fetch_diff(&self) -> Result<String> {
         let output = Command::new("gh")
             .args([
                 "pr",
