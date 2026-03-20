@@ -70,12 +70,12 @@ struct PullRequestResponse {
 pub(crate) struct PullRequest {
     number: u32,
     title: String,
-    repo_name: String,
+    pub(crate) repo_name: String,
     url: String,
     head_ref_name: String,
-    head_ref_oid: String,
+    pub(crate) head_ref_oid: String,
     base_ref_name: String,
-    base_ref_oid: String,
+    pub(crate) base_ref_oid: String,
 }
 
 impl PullRequest {
