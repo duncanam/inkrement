@@ -1,6 +1,7 @@
 use std::process::Command;
 
 use color_eyre::eyre::{Context, Result, eyre};
+use itertools::Itertools;
 use unidiff::PatchSet;
 
 use crate::pull_changes::PullRequest;
@@ -48,36 +49,40 @@ fn fetch_file_at_ref(repo_name: &str, path: &str, git_ref: &str) -> Result<Strin
 impl PullRequest {
     /// Fetches the old and new source files for all files in the given diff
     pub(crate) fn fetch_source_files(&self, patch: &PatchSet) -> Result<SourceFiles> {
-        let mut old = Vec::new();
-        let mut new = Vec::new();
+        let old = patch
+            .files()
+            .iter()
+            .filter(|file| !file.is_added_file())
+            .map(|file| -> Result<SourceFile> {
+                let path = file.path();
 
-        for file in patch.files() {
-            let path = file.path();
-
-            if !file.is_added_file() {
                 let content = fetch_file_at_ref(&self.repo_name, &path, &self.base_ref_oid)
                     .wrap_err_with(|| format!("failed to fetch old version of {path}"))?;
 
-                old.push(SourceFile {
+                Ok(SourceFile {
                     path: path.clone(),
                     content,
-                });
-            }
+                })
+            })
+            .try_collect()?;
 
-            if !file.is_removed_file() {
+        let new = patch
+            .files()
+            .iter()
+            .filter(|file| !file.is_removed_file())
+            .map(|file| -> Result<SourceFile> {
+                let path = file.path();
+
                 let content = fetch_file_at_ref(&self.repo_name, &path, &self.head_ref_oid)
                     .wrap_err_with(|| format!("failed to fetch new version of {path}"))?;
 
-                new.push(SourceFile {
+                Ok(SourceFile {
                     path: path.clone(),
                     content,
-                });
-            }
-        }
+                })
+            })
+            .try_collect()?;
 
-        Ok(SourceFiles {
-            old: old.into(),
-            new: new.into(),
-        })
+        Ok(SourceFiles { old, new })
     }
 }
