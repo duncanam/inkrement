@@ -4,6 +4,7 @@ use color_eyre::eyre::{Context, Result, eyre};
 use itertools::Itertools;
 use serde::Deserialize;
 
+/// Represents all pull requests found by the PR search JSON output
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
     items: Box<[SearchPullRequest]>,
@@ -31,6 +32,7 @@ impl SearchResponse {
     }
 }
 
+/// Represents a pull request as found by Github search JSON
 #[derive(Debug, Deserialize)]
 struct SearchPullRequest {
     number: u32,
@@ -46,9 +48,10 @@ impl SearchPullRequest {
     }
 }
 
+/// Represents a JSON packet from Github with metadata
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PullRequest {
+struct PullRequestResponse {
     number: u32,
     title: String,
     url: String,
@@ -56,6 +59,29 @@ struct PullRequest {
     head_ref_oid: String,
     base_ref_name: String,
     base_ref_oid: String,
+}
+
+/// A pull request and its metadata
+///
+/// # Note
+/// This differs from PullRequestResponse due to requiring the repo_name which is not in the JSON
+/// payload delivered by Github and requires parsing
+#[derive(Debug)]
+struct PullRequest {
+    number: u32,
+    title: String,
+    repo_name: String,
+    url: String,
+    head_ref_name: String,
+    head_ref_oid: String,
+    base_ref_name: String,
+    base_ref_oid: String,
+}
+
+impl PullRequest {
+    fn fetch_diff(&self) -> Result<String> {
+        todo!()
+    }
 }
 
 impl TryFrom<SearchPullRequest> for PullRequest {
@@ -84,12 +110,25 @@ impl TryFrom<SearchPullRequest> for PullRequest {
             ));
         }
 
-        serde_json::from_slice(&output.stdout).wrap_err_with(|| {
-            format!("failed to parse PR {repo_name}#{number} while fetching pull requests")
+        let resp: PullRequestResponse =
+            serde_json::from_slice(&output.stdout).wrap_err_with(|| {
+                format!("failed to parse PR {repo_name}#{number} while fetching pull requests")
+            })?;
+
+        Ok(PullRequest {
+            number: resp.number,
+            title: resp.title,
+            repo_name: repo_name.to_string(),
+            url: resp.url,
+            head_ref_name: resp.head_ref_name,
+            head_ref_oid: resp.head_ref_oid,
+            base_ref_name: resp.base_ref_name,
+            base_ref_oid: resp.base_ref_oid,
         })
     }
 }
 
+/// All active pull requests
 #[derive(Debug)]
 struct PullRequests(Box<[PullRequest]>);
 
@@ -158,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_pull_request() {
+    fn parse_pull_request_response() {
         let json = r#"{
             "number": 42,
             "title": "Add widget endpoint",
@@ -169,12 +208,12 @@ mod tests {
             "baseRefOid": "789fed321cba"
         }"#;
 
-        let pr: PullRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(pr.number, 42);
-        assert_eq!(pr.title, "Add widget endpoint");
-        assert_eq!(pr.head_ref_name, "feature/widgets");
-        assert_eq!(pr.head_ref_oid, "abc123def456");
-        assert_eq!(pr.base_ref_name, "main");
-        assert_eq!(pr.base_ref_oid, "789fed321cba");
+        let resp: PullRequestResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.number, 42);
+        assert_eq!(resp.title, "Add widget endpoint");
+        assert_eq!(resp.head_ref_name, "feature/widgets");
+        assert_eq!(resp.head_ref_oid, "abc123def456");
+        assert_eq!(resp.base_ref_name, "main");
+        assert_eq!(resp.base_ref_oid, "789fed321cba");
     }
 }
