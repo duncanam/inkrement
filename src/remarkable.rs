@@ -128,8 +128,21 @@ impl RemarkableClient {
         Ok(all.into_boxed_slice())
     }
 
-    /// Upload a PDF to the reMarkable (lands in root)
+    /// Upload a PDF to the reMarkable, targeting the root folder.
+    ///
+    /// The reMarkable USB web interface has an undocumented behavior where uploads are placed
+    /// in whichever folder was last listed via `GET /documents/{id}`. This was discovered by
+    /// reading the minified source of the web GUI at `http://10.11.99.1/assets/index.js`,
+    /// where the upload function (`Cx`) calls `jd(t)` (a document listing) on the target
+    /// folder immediately before `POST /upload`.
+    ///
+    /// To ensure our uploads consistently land in root, we issue a `GET /documents/` (root
+    /// listing) immediately before each upload to set the reMarkable's folder context.
     pub(crate) fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
+        // Set the reMarkable's upload target to root by listing the root folder
+        self.list_documents(&DocumentId::root())
+            .wrap_err("could not list documents in root while uploading")?;
+
         let part = Part::bytes(pdf.as_bytes().to_vec())
             .file_name(filename.to_string())
             .mime_str("application/pdf")
