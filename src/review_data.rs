@@ -3,45 +3,6 @@ use unidiff::{Hunk, Line, PatchSet, PatchedFile};
 
 use crate::{fetch_files::SourceFiles, pull_changes::PullRequest};
 
-#[derive(Debug, Serialize)]
-struct ReviewData {
-    title: String,
-    repo: String,
-    number: u32,
-    author: String,
-    reviewer: String,
-    base_ref: String,
-    head_ref: String,
-    lines_added: usize,
-    lines_removed: usize,
-    files: Box<[FileData]>,
-}
-
-#[derive(Debug, Serialize)]
-struct FileData {
-    path: String,
-    lang: String,
-    hunks: Box<[HunkData]>,
-    old_source: Option<String>,
-    new_source: Option<String>,
-    old_source_label: Option<String>,
-    new_source_label: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct HunkData {
-    id: usize,
-    lines: Box<[LineData]>,
-}
-
-#[derive(Debug, Serialize)]
-struct LineData {
-    kind: String,
-    content: String,
-    old_line_no: Option<usize>,
-    new_line_no: Option<usize>,
-}
-
 /// Infer language name from file extension for Typst raw blocks
 fn lang_from_path(path: &str) -> String {
     path.rsplit('.')
@@ -78,31 +39,62 @@ fn lang_from_path(path: &str) -> String {
         .to_string()
 }
 
-impl From<&Line> for LineData {
-    fn from(line: &Line) -> Self {
-        let kind = if line.is_added() {
-            "added"
-        } else if line.is_removed() {
-            "removed"
-        } else {
-            "context"
-        }
-        .to_string();
+#[derive(Debug, Serialize)]
+struct ReviewData {
+    title: String,
+    repo: String,
+    number: u32,
+    author: String,
+    reviewer: String,
+    base_ref: String,
+    head_ref: String,
+    lines_added: usize,
+    lines_removed: usize,
+    files: Box<[FileData]>,
+}
+
+impl ReviewData {
+    /// Build review data from a pull request, its parsed diff, source files, and reviewer name
+    pub(crate) fn build(
+        pr: PullRequest,
+        reviewer: &str,
+        patch: &PatchSet,
+        source_files: SourceFiles,
+    ) -> Self {
+        let lines_added = patch.files().iter().map(|f| f.added()).sum();
+        let lines_removed = patch.files().iter().map(|f| f.removed()).sum();
+
+        let files = patch
+            .files()
+            .iter()
+            .enumerate()
+            .map(|(idx, file)| FileData::new(idx, file, &source_files))
+            .collect();
 
         Self {
-            kind,
-            content: line.value.clone(),
-            old_line_no: line.source_line_no,
-            new_line_no: line.target_line_no,
+            title: pr.title,
+            repo: pr.repo_name,
+            number: pr.number,
+            author: pr.author,
+            reviewer: reviewer.to_owned(), // we clone because each PDF needs it
+            base_ref: pr.base_ref_oid,
+            head_ref: pr.head_ref_oid,
+            lines_added,
+            lines_removed,
+            files,
         }
     }
 }
 
-impl HunkData {
-    fn new(id: usize, hunk: &Hunk) -> Self {
-        let lines = hunk.lines().iter().map(LineData::from).collect();
-        Self { id, lines }
-    }
+#[derive(Debug, Serialize)]
+struct FileData {
+    path: String,
+    lang: String,
+    hunks: Box<[HunkData]>,
+    old_source: Option<String>,
+    new_source: Option<String>,
+    old_source_label: Option<String>,
+    new_source_label: Option<String>,
 }
 
 impl FileData {
@@ -127,7 +119,7 @@ impl FileData {
 
         let hunks = file
             .hunks()
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(hunk_idx, hunk)| HunkData::new(hunk_idx + 1, hunk))
             .collect();
@@ -144,35 +136,43 @@ impl FileData {
     }
 }
 
-impl ReviewData {
-    /// Build review data from a pull request, its parsed diff, source files, and reviewer name
-    pub(crate) fn build(
-        pr: PullRequest,
-        reviewer: &str,
-        patch: &PatchSet,
-        source_files: SourceFiles,
-    ) -> Self {
-        let lines_added = patch.files().iter().map(|f| f.added()).sum();
-        let lines_removed = patch.files().iter().map(|f| f.removed()).sum();
+#[derive(Debug, Serialize)]
+struct HunkData {
+    id: usize,
+    lines: Box<[LineData]>,
+}
 
-        let files = patch
-            .files()
-            .into_iter()
-            .enumerate()
-            .map(|(idx, file)| FileData::new(idx, file, &source_files))
-            .collect();
+impl HunkData {
+    fn new(id: usize, hunk: &Hunk) -> Self {
+        let lines = hunk.lines().iter().map(LineData::from).collect();
+        Self { id, lines }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LineData {
+    kind: String,
+    content: String,
+    old_line_no: Option<usize>,
+    new_line_no: Option<usize>,
+}
+
+impl From<&Line> for LineData {
+    fn from(line: &Line) -> Self {
+        let kind = if line.is_added() {
+            "added"
+        } else if line.is_removed() {
+            "removed"
+        } else {
+            "context"
+        }
+        .to_string();
 
         Self {
-            title: pr.title,
-            repo: pr.repo_name,
-            number: pr.number,
-            author: pr.author,
-            reviewer: reviewer.to_owned(), // we clone because each PDF needs it
-            base_ref: pr.base_ref_oid,
-            head_ref: pr.head_ref_oid,
-            lines_added,
-            lines_removed,
-            files,
+            kind,
+            content: line.value.clone(),
+            old_line_no: line.source_line_no,
+            new_line_no: line.target_line_no,
         }
     }
 }
