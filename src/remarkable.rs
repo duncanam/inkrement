@@ -8,7 +8,7 @@ const BASE_URL: &str = "http://10.11.99.1";
 
 /// A unique identifier for a document or folder on the reMarkable
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) struct DocumentId(String);
+struct DocumentId(String);
 
 impl DocumentId {
     /// The root folder (empty string parent)
@@ -23,7 +23,7 @@ impl DocumentId {
 
 /// The type of entry on the reMarkable
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub(crate) enum EntryType {
+enum EntryType {
     CollectionType,
     DocumentType,
 }
@@ -31,7 +31,7 @@ pub(crate) enum EntryType {
 /// The file format of a document
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum FileType {
+enum FileType {
     Pdf,
     Epub,
     #[serde(other)]
@@ -41,78 +41,92 @@ pub(crate) enum FileType {
 /// A document or folder on the reMarkable
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-pub(crate) struct Document {
+struct Document {
     #[serde(rename = "ID")]
-    pub id: DocumentId,
+    id: DocumentId,
     #[serde(rename = "Type")]
-    pub entry_type: EntryType,
-    pub visible_name: String,
-    pub parent: DocumentId,
+    entry_type: EntryType,
+    visible_name: String,
+    parent: DocumentId,
     #[serde(default, rename = "fileType")]
-    pub file_type: Option<FileType>,
+    file_type: Option<FileType>,
 }
 
 impl Document {
-    pub(crate) fn is_folder(&self) -> bool {
+    fn is_folder(&self) -> bool {
         self.entry_type == EntryType::CollectionType
     }
 
-    pub(crate) fn is_document(&self) -> bool {
+    fn is_document(&self) -> bool {
         self.entry_type == EntryType::DocumentType
     }
 
     /// Check if this document was created by inkrement
-    pub(crate) fn is_inkrement(&self) -> bool {
+    fn is_inkrement(&self) -> bool {
         self.visible_name.contains(INKREMENT_TAG)
     }
 }
 
 /// Client for the reMarkable USB web interface
-pub(crate) struct RemarkableClient {
-    client: Client,
-}
+struct RemarkableClient(Client);
 
 impl RemarkableClient {
     /// Create a new client, verifying the reMarkable is reachable
-    pub(crate) fn connect() -> Result<Self> {
+    fn connect() -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .wrap_err("failed to create HTTP client")?;
+            .wrap_err("failed to create HTTP client while trying to connect to reMarkable")?;
 
         // Verify connectivity
         client
             .get(format!("{BASE_URL}/documents/"))
             .send()
-            .wrap_err("could not connect to reMarkable — is it plugged in via USB with the web interface enabled?")?;
+            .wrap_err("could not connect to reMarkable; is it plugged in via USB with the web interface enabled? Is a VPN blocking LAN connection?")?;
 
-        Ok(Self { client })
+        Ok(Self(client))
     }
 
     /// List all documents in a folder (use `DocumentId::root()` for root)
-    pub(crate) fn list_documents(&self, parent: &DocumentId) -> Result<Vec<Document>> {
+    fn list_documents(&self, parent: &DocumentId) -> Result<Box<[Document]>> {
         let url = if parent.as_str().is_empty() {
             format!("{BASE_URL}/documents/")
         } else {
             format!("{BASE_URL}/documents/{}", parent.as_str())
         };
 
-        self.client
+        self.0
             .get(&url)
             .send()
             .wrap_err("failed to list documents on reMarkable")?
-            .json::<Vec<Document>>()
+            .json()
             .wrap_err("failed to parse document listing from reMarkable")
     }
 
-    /// List all inkrement documents on the reMarkable (searches root)
-    pub(crate) fn list_inkrement_documents(&self) -> Result<Vec<Document>> {
-        let docs = self.list_documents(&DocumentId::root())?;
-        Ok(docs.into_iter().filter(|d| d.is_inkrement()).collect())
+    /// Fetch all inkcrement_documents on the reMarkable, recursing into all folders
+    fn list_all_inkcrement_documents(&self) -> Result<Box<[Document]>> {
+        // Prefer manual stack management over recursion
+        let mut all = Vec::new();
+        let mut stack = vec![DocumentId::root()];
+
+        while let Some(parent) = stack.pop() {
+            for doc in self.list_documents(&parent)? {
+                if doc.is_folder() {
+                    stack.push(doc.id.clone());
+                }
+                if doc.is_inkrement() {
+                    all.push(doc);
+                }
+            }
+        }
+
+        // Generally prefer boxed slices over vecs due to their immutability guarantees and more
+        // efficient layouts
+        Ok(all.into_boxed_slice())
     }
 
     /// Upload a PDF to the reMarkable (lands in root)
-    pub(crate) fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
+    fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
         let form = reqwest::blocking::multipart::Form::new().part(
             "file",
             reqwest::blocking::multipart::Part::bytes(pdf.as_bytes().to_vec())
@@ -122,7 +136,7 @@ impl RemarkableClient {
         );
 
         let response = self
-            .client
+            .0
             .post(format!("{BASE_URL}/upload"))
             .multipart(form)
             .send()
@@ -137,10 +151,13 @@ impl RemarkableClient {
     }
 
     /// Download an annotated PDF from the reMarkable
-    pub(crate) fn download(&self, doc_id: &DocumentId) -> Result<Vec<u8>> {
+    fn download(&self, doc_id: &DocumentId) -> Result<Vec<u8>> {
         let response = self
-            .client
-            .get(format!("{BASE_URL}/download/{}/placeholder", doc_id.as_str()))
+            .0
+            .get(format!(
+                "{BASE_URL}/download/{}/placeholder",
+                doc_id.as_str()
+            ))
             .send()
             .wrap_err("failed to download document from reMarkable")?;
 
