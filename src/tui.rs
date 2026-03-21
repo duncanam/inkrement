@@ -69,6 +69,32 @@ enum Tab {
     PublishReviews,
 }
 
+impl Tab {
+    /// The accent color for this tab.
+    fn color(self) -> Color {
+        match self {
+            Self::GetPrs => Color::Green,
+            Self::PublishReviews => Color::Blue,
+        }
+    }
+
+    /// The index of this tab in TAB_NAMES / TAB_COLORS.
+    fn index(self) -> usize {
+        match self {
+            Self::GetPrs => 0,
+            Self::PublishReviews => 1,
+        }
+    }
+
+    /// Cycle to the next tab.
+    fn next(self) -> Self {
+        match self {
+            Self::GetPrs => Self::PublishReviews,
+            Self::PublishReviews => Self::GetPrs,
+        }
+    }
+}
+
 /// The upload status of a PR in the Get tab.
 ///
 /// Determines how the row is displayed and whether it can be toggled.
@@ -109,10 +135,9 @@ impl PrRow {
             PrStatus::Available => Cell::from("[ ]"),
         };
 
-        let base_style = if self.status == PrStatus::Uploaded {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default()
+        let base_style = match self.status {
+            PrStatus::Uploaded => Style::default().fg(Color::DarkGray),
+            _ => Style::default(),
         };
 
         Row::new(vec![
@@ -283,10 +308,7 @@ impl App {
 
     /// Cycle to the next tab.
     fn next_tab(&mut self) {
-        self.tab = match self.tab {
-            Tab::GetPrs => Tab::PublishReviews,
-            Tab::PublishReviews => Tab::GetPrs,
-        };
+        self.tab = self.tab.next();
     }
 
     /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
@@ -321,20 +343,9 @@ impl App {
         frame.render_widget(header, area);
     }
 
-    /// Returns the accent color for the currently active tab.
-    fn tab_color(&self) -> Color {
-        match self.tab {
-            Tab::GetPrs => Color::Green,
-            Tab::PublishReviews => Color::Blue,
-        }
-    }
-
     /// Render the tab bar with colored active tab and matching separator line.
     fn render_tabs(&self, frame: &mut Frame, area: Rect) {
-        let selected = match self.tab {
-            Tab::GetPrs => 0,
-            Tab::PublishReviews => 1,
-        };
+        let selected = self.tab.index();
 
         let spans = TAB_NAMES
             .iter()
@@ -357,7 +368,7 @@ impl App {
         let tabs = Paragraph::new(Line::from(spans)).block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(self.tab_color())),
+                .border_style(Style::default().fg(self.tab.color())),
         );
         frame.render_widget(tabs, area);
     }
