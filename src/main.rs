@@ -2,6 +2,7 @@ use clap::Parser;
 use color_eyre::eyre::{Context, Result};
 
 mod cli;
+mod commands;
 mod diff_parse;
 mod fetch_files;
 mod pdf;

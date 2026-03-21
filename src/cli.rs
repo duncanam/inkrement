@@ -1,9 +1,9 @@
-use std::{collections::HashSet, fs, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::{Context, Result};
+use color_eyre::eyre::Result;
 
-use crate::{pull_changes::PullRequests, remarkable::RemarkableClient};
+use crate::commands;
 
 #[derive(Parser)]
 #[command(
@@ -48,89 +48,12 @@ enum Command {
     },
 }
 
-impl Command {
-    fn run(self) -> Result<()> {
-        match self {
-            Self::Get => Self::get(),
-            Self::Generate { output } => Self::generate(output),
-        }
-    }
-
-    /// Gets new pull request reviews from GitHub and uploads them to the reMarkable
-    fn get() -> Result<()> {
-        let remarkable = RemarkableClient::connect()
-            .wrap_err("while syncing, could not connect to reMarkable")?;
-
-        let prs = PullRequests::fetch().wrap_err("while syncing, could not fetch pull requests")?;
-
-        let existing: HashSet<String> = remarkable
-            .list_inkrement_documents()
-            .wrap_err("while syncing, could not get Inkcrement documents")?
-            .into_iter()
-            .map(|d| d.visible_name)
-            .collect();
-
-        for pr in prs.pull_requests {
-            let filename = pr.pdf_filename();
-
-            if existing.contains(&filename) {
-                println!("Skipping {} (already on tablet)", filename);
-                continue;
-            }
-
-            println!("Rendering {}...", filename);
-            let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
-                format!(
-                    "while syncing, failed to render {}#{} \"{}\"",
-                    pr.repo_name, pr.number, pr.title
-                )
-            })?;
-
-            println!("Uploading {}...", filename);
-            remarkable.upload(&filename, &pdf).wrap_err_with(|| {
-                format!(
-                    "while syncing, failed to upload {}#{} \"{}\"",
-                    pr.repo_name, pr.number, pr.title
-                )
-            })?;
-
-            println!("Uploaded: {}", filename);
-        }
-
-        Ok(())
-    }
-
-    /// Generate PDF output without requiring a reMarkable connected
-    fn generate(output_dir: PathBuf) -> Result<()> {
-        let prs = PullRequests::fetch()?;
-
-        fs::create_dir_all(&output_dir).wrap_err("failed to create output directory")?;
-
-        for pr in prs.pull_requests.into_vec() {
-            let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
-                format!(
-                    "failed to PDF-render {}#{} \"{}\"",
-                    pr.repo_name, pr.number, pr.title
-                )
-            })?;
-            let filename = pr.pdf_filename();
-            pdf.write(&output_dir, &filename).wrap_err_with(|| {
-                format!(
-                    "failed to write PDF to file for {}#{} \"{}\"",
-                    pr.repo_name, pr.number, pr.title
-                )
-            })?;
-
-            println!("Generated: {}", output_dir.join(&filename).display());
-        }
-
-        Ok(())
-    }
-}
-
 impl Cli {
-    /// Runs the inkcrement CLI logic
+    /// Runs the inkrement CLI logic
     pub fn run(self) -> Result<()> {
-        self.command.run()
+        match self.command {
+            Command::Get => commands::get_reviews_and_send_to_remarkable(),
+            Command::Generate { output } => commands::generate_local_pdfs(&output),
+        }
     }
 }
