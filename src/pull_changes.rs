@@ -74,6 +74,8 @@ struct PullRequestResponse {
     title: String,
     url: String,
     author: GitHubUser,
+    additions: usize,
+    deletions: usize,
     head_ref_name: String,
     head_ref_oid: String,
     base_ref_name: String,
@@ -97,6 +99,8 @@ pub(crate) struct PullRequest {
     pub(crate) repo_name: String,
     url: String,
     pub(crate) author: String,
+    pub(crate) additions: usize,
+    pub(crate) deletions: usize,
     head_ref_name: String,
     pub(crate) head_ref_oid: String,
     base_ref_name: String,
@@ -162,7 +166,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
                 "--repo",
                 repo_name,
                 "--json",
-                "number,title,url,author,headRefName,headRefOid,baseRefName,baseRefOid",
+                "number,title,url,author,additions,deletions,headRefName,headRefOid,baseRefName,baseRefOid",
             ])
             .output()
             .wrap_err("failed to run gh CLI while fetching pull requests")?;
@@ -185,6 +189,8 @@ impl TryFrom<SearchPullRequest> for PullRequest {
             repo_name: repo_name.to_string(),
             url: resp.url,
             author: resp.author.login,
+            additions: resp.additions,
+            deletions: resp.deletions,
             head_ref_name: resp.head_ref_name,
             head_ref_oid: resp.head_ref_oid,
             base_ref_name: resp.base_ref_name,
@@ -276,6 +282,8 @@ mod tests {
             "title": "Add widget endpoint",
             "url": "https://github.com/acme/widgets/pull/42",
             "author": {"login": "jsmith"},
+            "additions": 150,
+            "deletions": 30,
             "headRefName": "feature/widgets",
             "headRefOid": "abc123def456",
             "baseRefName": "main",
@@ -286,6 +294,8 @@ mod tests {
         assert_eq!(resp.number, 42);
         assert_eq!(resp.title, "Add widget endpoint");
         assert_eq!(resp.author.login, "jsmith");
+        assert_eq!(resp.additions, 150);
+        assert_eq!(resp.deletions, 30);
         assert_eq!(resp.head_ref_name, "feature/widgets");
         assert_eq!(resp.head_ref_oid, "abc123def456");
         assert_eq!(resp.base_ref_name, "main");

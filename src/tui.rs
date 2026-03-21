@@ -1,6 +1,10 @@
+use std::collections::HashSet;
+
 use color_eyre::eyre::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
+
+use crate::pull_changes::{PullRequest, PullRequests};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -95,6 +99,29 @@ impl Tab {
     }
 }
 
+/// Whether the reMarkable tablet is reachable via USB.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemarkableStatus {
+    Connected,
+    Disconnected,
+}
+
+impl RemarkableStatus {
+    /// Render as a styled span for the header bar.
+    fn to_span(self) -> Span<'static> {
+        match self {
+            Self::Connected => Span::styled("● reMarkable connected", Style::default().fg(Color::Green)),
+            Self::Disconnected => Span::styled("○ reMarkable disconnected", Style::default().fg(Color::DarkGray)),
+        }
+    }
+}
+
+impl From<bool> for RemarkableStatus {
+    fn from(connected: bool) -> Self {
+        if connected { Self::Connected } else { Self::Disconnected }
+    }
+}
+
 /// The upload status of a PR in the Get tab.
 ///
 /// Determines how the row is displayed and whether it can be toggled.
@@ -127,6 +154,25 @@ struct PrRow {
 }
 
 impl PrRow {
+    /// Build a PrRow from a PullRequest, checking if it's already on the reMarkable.
+    fn from_pr(pr: &PullRequest, existing_filenames: &HashSet<String>) -> Self {
+        let short_sha = &pr.head_ref_oid[..8.min(pr.head_ref_oid.len())];
+        let status = if existing_filenames.contains(&pr.pdf_filename()) {
+            PrStatus::Uploaded
+        } else {
+            PrStatus::Available
+        };
+
+        Self {
+            number: pr.number,
+            repo: pr.repo_name.clone(),
+            short_sha: short_sha.to_string(),
+            added: pr.additions,
+            removed: pr.deletions,
+            status,
+        }
+    }
+
     /// Render this PR as a table row with colored checkbox and diff stats.
     fn to_row(&self) -> Row<'_> {
         let checkbox = match self.status {
@@ -176,6 +222,8 @@ pub(crate) struct App {
     prs: Vec<PrRow>,
     /// Ratatui table selection state (tracks cursor position).
     table_state: TableState,
+    /// Whether the reMarkable is reachable via USB.
+    remarkable_status: RemarkableStatus,
     /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
     /// Set to true when the user presses 'q' to exit.
@@ -183,36 +231,25 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Create a new app with mock data for development.
+    /// Create a new app from fetched GitHub PRs and reMarkable document names.
     ///
-    /// TODO: Replace with real data from GitHub + reMarkable on startup.
-    pub(crate) fn new() -> Self {
-        let prs = vec![
-            PrRow {
-                number: 72,
-                repo: "Atomic-Industries/crab-rave".to_string(),
-                short_sha: "747e7fe8".to_string(),
-                added: 3525,
-                removed: 634,
-                status: PrStatus::Uploaded,
-            },
-            PrRow {
-                number: 1,
-                repo: "Atomic-Industries/angstrom".to_string(),
-                short_sha: "651164df".to_string(),
-                added: 120,
-                removed: 0,
-                status: PrStatus::Available,
-            },
-            PrRow {
-                number: 15,
-                repo: "Atomic-Industries/core-lib".to_string(),
-                short_sha: "a3f2b1c9".to_string(),
-                added: 45,
-                removed: 12,
-                status: PrStatus::Queued,
-            },
-        ];
+    /// `existing_filenames` contains the `visible_name` of all inkrement documents
+    /// already on the reMarkable, used to mark PRs as already uploaded.
+    /// Create a new app from fetched GitHub PRs and reMarkable state.
+    ///
+    /// `existing_filenames` contains the `visible_name` of all inkrement documents
+    /// already on the reMarkable, used to mark PRs as already uploaded.
+    /// `remarkable_connected` indicates whether the reMarkable was reachable at startup.
+    pub(crate) fn new(
+        pull_requests: &PullRequests,
+        existing_filenames: HashSet<String>,
+        remarkable_status: RemarkableStatus,
+    ) -> Self {
+        let prs = pull_requests
+            .pull_requests
+            .iter()
+            .map(|pr| PrRow::from_pr(pr, &existing_filenames))
+            .collect();
 
         let mut table_state = TableState::default();
         table_state.select(Some(0));
@@ -221,6 +258,7 @@ impl App {
             tab: Tab::GetPrs,
             prs,
             table_state,
+            remarkable_status,
             progress: None,
             should_quit: false,
         }
@@ -333,14 +371,14 @@ impl App {
         self.render_progress(frame, chunks[4]);
     }
 
-    /// Render the version string right-aligned at the top of the screen.
+    /// Render the version string and reMarkable connection status.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let header = Paragraph::new(Span::styled(
-            VERSION_LABEL,
-            Style::default().fg(Color::DarkGray),
-        ))
-        .alignment(Alignment::Right);
-        frame.render_widget(header, area);
+        let header = Line::from(vec![
+            self.remarkable_status.to_span(),
+            Span::raw("  "),
+            Span::styled(VERSION_LABEL, Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(header).alignment(Alignment::Right), area);
     }
 
     /// Render the tab bar with colored active tab and matching separator line.

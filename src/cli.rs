@@ -1,9 +1,14 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Context, Result};
 
-use crate::{commands, tui};
+use crate::{
+    commands,
+    pull_changes::PullRequests,
+    remarkable::RemarkableClient,
+    tui::{self, RemarkableStatus},
+};
 
 #[derive(Parser)]
 #[command(
@@ -51,8 +56,21 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         match self.command {
             None => {
+                let prs = PullRequests::fetch()
+                    .wrap_err("failed to fetch pull requests from GitHub")?;
+
+                // Try connecting to reMarkable — if it fails, continue without it
+                let (remarkable_status, existing) = match RemarkableClient::connect() {
+                    Ok(rm) => {
+                        let docs = rm.list_inkrement_documents().unwrap_or_default();
+                        let names = docs.into_iter().map(|d| d.visible_name).collect();
+                        (RemarkableStatus::Connected, names)
+                    }
+                    Err(_) => (RemarkableStatus::Disconnected, Default::default()),
+                };
+
                 let terminal = ratatui::init();
-                let result = tui::App::new().run(terminal);
+                let result = tui::App::new(&prs, existing, remarkable_status).run(terminal);
                 ratatui::restore();
                 result
             }
