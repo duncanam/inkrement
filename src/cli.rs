@@ -38,8 +38,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Gets new review changes from Github and posts finished reviews
-    Sync,
+    /// Gets new pull request reviews from GitHub and uploads them to the reMarkable
+    Get,
     /// Generate review PDFs locally for preview (no reMarkable needed)
     Generate {
         /// Output directory for generated PDFs
@@ -48,79 +48,89 @@ enum Command {
     },
 }
 
+impl Command {
+    fn run(self) -> Result<()> {
+        match self {
+            Self::Get => Self::get(),
+            Self::Generate { output } => Self::generate(output),
+        }
+    }
+
+    /// Gets new pull request reviews from GitHub and uploads them to the reMarkable
+    fn get() -> Result<()> {
+        let remarkable = RemarkableClient::connect()
+            .wrap_err("while syncing, could not connect to reMarkable")?;
+
+        let prs = PullRequests::fetch().wrap_err("while syncing, could not fetch pull requests")?;
+
+        let existing: HashSet<String> = remarkable
+            .list_inkrement_documents()
+            .wrap_err("while syncing, could not get Inkcrement documents")?
+            .into_iter()
+            .map(|d| d.visible_name)
+            .collect();
+
+        for pr in prs.pull_requests {
+            let filename = pr.pdf_filename();
+
+            if existing.contains(&filename) {
+                println!("Skipping {} (already on tablet)", filename);
+                continue;
+            }
+
+            println!("Rendering {}...", filename);
+            let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
+                format!(
+                    "while syncing, failed to render {}#{} \"{}\"",
+                    pr.repo_name, pr.number, pr.title
+                )
+            })?;
+
+            println!("Uploading {}...", filename);
+            remarkable.upload(&filename, &pdf).wrap_err_with(|| {
+                format!(
+                    "while syncing, failed to upload {}#{} \"{}\"",
+                    pr.repo_name, pr.number, pr.title
+                )
+            })?;
+
+            println!("Uploaded: {}", filename);
+        }
+
+        Ok(())
+    }
+
+    /// Generate PDF output without requiring a reMarkable connected
+    fn generate(output_dir: PathBuf) -> Result<()> {
+        let prs = PullRequests::fetch()?;
+
+        fs::create_dir_all(&output_dir).wrap_err("failed to create output directory")?;
+
+        for pr in prs.pull_requests.into_vec() {
+            let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
+                format!(
+                    "failed to PDF-render {}#{} \"{}\"",
+                    pr.repo_name, pr.number, pr.title
+                )
+            })?;
+            let filename = pr.pdf_filename();
+            pdf.write(&output_dir, &filename).wrap_err_with(|| {
+                format!(
+                    "failed to write PDF to file for {}#{} \"{}\"",
+                    pr.repo_name, pr.number, pr.title
+                )
+            })?;
+
+            println!("Generated: {}", output_dir.join(&filename).display());
+        }
+
+        Ok(())
+    }
+}
+
 impl Cli {
     /// Runs the inkcrement CLI logic
     pub fn run(self) -> Result<()> {
-        match self.command {
-            Command::Sync => {
-                let remarkable = RemarkableClient::connect()
-                    .wrap_err("while syncing, could not connect to reMarkable")?;
-
-                let prs = PullRequests::fetch()
-                    .wrap_err("while syncing, could not fetch pull requests")?;
-
-                let existing: HashSet<String> = remarkable
-                    .list_inkrement_documents()
-                    .wrap_err("while syncing, could not get Inkcrement documents")?
-                    .into_iter()
-                    .map(|d| d.visible_name)
-                    .collect();
-
-                for pr in prs.pull_requests {
-                    let filename = pr.pdf_filename();
-
-                    if existing.contains(&filename) {
-                        println!("Skipping {} (already on tablet)", filename);
-                        continue;
-                    }
-
-                    println!("Rendering {}...", filename);
-                    let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
-                        format!(
-                            "while syncing, failed to render {}#{} \"{}\"",
-                            pr.repo_name, pr.number, pr.title
-                        )
-                    })?;
-
-                    println!("Uploading {}...", filename);
-                    remarkable.upload(&filename, &pdf).wrap_err_with(|| {
-                        format!(
-                            "while syncing, failed to upload {}#{} \"{}\"",
-                            pr.repo_name, pr.number, pr.title
-                        )
-                    })?;
-
-                    println!("Uploaded: {}", filename);
-                }
-
-                Ok(())
-            }
-
-            Command::Generate { output: output_dir } => {
-                let prs = PullRequests::fetch()?;
-
-                fs::create_dir_all(&output_dir).wrap_err("failed to create output directory")?;
-
-                for pr in prs.pull_requests.into_vec() {
-                    let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
-                        format!(
-                            "failed to PDF-render {}#{} \"{}\"",
-                            pr.repo_name, pr.number, pr.title
-                        )
-                    })?;
-                    let filename = pr.pdf_filename();
-                    pdf.write(&output_dir, &filename).wrap_err_with(|| {
-                        format!(
-                            "failed to write PDF to file for {}#{} \"{}\"",
-                            pr.repo_name, pr.number, pr.title
-                        )
-                    })?;
-
-                    println!("Generated: {}", output_dir.join(&filename).display());
-                }
-
-                Ok(())
-            }
-        }
+        self.command.run()
     }
 }
