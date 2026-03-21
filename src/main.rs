@@ -9,6 +9,7 @@ mod pdf;
 mod pull_changes;
 mod remarkable;
 mod review_data;
+mod tui;
 
 fn main() -> Result<()> {
     color_eyre::install().wrap_err("could not set up error colors")?;

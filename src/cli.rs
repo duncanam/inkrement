@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 
-use crate::commands;
+use crate::{commands, tui};
 
 #[derive(Parser)]
 #[command(
@@ -17,23 +17,21 @@ PDFs, interprets your handwritten annotations using Anthropic's OCR tools, and
 posts a pull request review with your comments.
 
 Workflow:
-  1. Run `inkrement sync` to fetch open PRs into PR Reviews/Open
-  2. On your reMarkable, move a review to PR Reviews/In Process and annotate
-  3. When finished, move it to PR Reviews/Complete
-  4. Run `inkrement sync` again to parse and post your review to GitHub
+  1. Run `inkrement` to launch the interactive TUI
+  2. Select PRs to send to your reMarkable
+  3. Annotate on the tablet, then plug back in
+  4. Switch to the Publish tab to post reviews
 
-Directory structure (created automatically on your reMarkable):
-  PR Reviews/Open         New reviews waiting for markup
-  PR Reviews/In Process   Reviews you are actively annotating
-  PR Reviews/Complete     Finished reviews ready to post
+Scripting:
+  inkrement get        Non-interactive: fetch PRs and upload to reMarkable
+  inkrement generate   Generate review PDFs locally for preview
 
 Required CLI tools: gh, claude",
-    arg_required_else_help = true,
     version
 )]
 pub struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -52,8 +50,14 @@ impl Cli {
     /// Runs the inkrement CLI logic
     pub fn run(self) -> Result<()> {
         match self.command {
-            Command::Get => commands::get_reviews_and_send_to_remarkable(),
-            Command::Generate { output } => commands::generate_local_pdfs(&output),
+            None => {
+                let terminal = ratatui::init();
+                let result = tui::App::new().run(terminal);
+                ratatui::restore();
+                result
+            }
+            Some(Command::Get) => commands::get_reviews_and_send_to_remarkable(),
+            Some(Command::Generate { output }) => commands::generate_local_pdfs(&output),
         }
     }
 }
