@@ -48,6 +48,24 @@ impl SearchPullRequest {
     }
 }
 
+/// Get the currently logged-in user
+fn fetch_current_user() -> Result<String> {
+    let output = Command::new("gh")
+        .args(["api", "user", "-q", ".login"])
+        .output()
+        .wrap_err("failed to run gh CLI while getting user")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("while getting user, gh api user failed: {stderr}"));
+    }
+
+    Ok(String::from_utf8(output.stdout)
+        .wrap_err("gh api user returned invalid UTF-8")?
+        .trim()
+        .to_string())
+}
+
 /// Represents a JSON packet from Github with metadata
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,7 +177,10 @@ impl TryFrom<SearchPullRequest> for PullRequest {
 
 /// All active pull requests
 #[derive(Debug)]
-struct PullRequests(Box<[PullRequest]>);
+struct PullRequests {
+    pull_requests: Box<[PullRequest]>,
+    reviewer: String,
+}
 
 impl PullRequests {
     /// Get the user's active pull requests
@@ -167,7 +188,7 @@ impl PullRequests {
         let search =
             SearchResponse::fetch().wrap_err("could not get list of active pull requests")?;
 
-        let prs = search
+        let pull_requests = search
             .items
             .into_iter()
             .map(PullRequest::try_from)
