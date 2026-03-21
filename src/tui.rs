@@ -2,7 +2,7 @@ use color_eyre::eyre::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -11,52 +11,80 @@ use ratatui::{
     },
 };
 
-/// Which tab is active
+/// The active tab in the TUI.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    /// Fetch PRs from GitHub and upload review PDFs to the reMarkable.
     GetPrs,
+    /// Download annotated PDFs from the reMarkable and publish reviews to GitHub.
     PublishReviews,
 }
 
-/// State of a PR row in the Get tab
+/// The upload status of a PR in the Get tab.
+///
+/// Determines how the row is displayed and whether it can be toggled.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PrStatus {
-    /// Available to select for upload
+    /// Not yet selected — can be toggled with space.
     Available,
-    /// Selected for upload this session
+    /// Marked for upload this session — will be processed on enter.
     Queued,
-    /// Already on the reMarkable
+    /// Already present on the reMarkable — cannot be toggled.
     Uploaded,
 }
 
-/// A row in the PR table
+/// A single row in the PR selection table.
+///
+/// Represents a pull request awaiting review, along with its upload status.
 struct PrRow {
+    /// GitHub PR number.
     number: u32,
+    /// Repository in `owner/name` format.
     repo: String,
+    /// First 8 characters of the head commit SHA.
     short_sha: String,
+    /// Total lines added in the diff.
     added: usize,
+    /// Total lines removed in the diff.
     removed: usize,
+    /// Whether this PR is available, queued, or already uploaded.
     status: PrStatus,
 }
 
-/// Progress state for the bottom bar
+/// Tracks the state of an ongoing background operation (render + upload).
+///
+/// Displayed as a status message and progress bar at the bottom of the TUI.
 struct Progress {
+    /// Human-readable description of the current step (e.g. "Rendering #72 crab-rave...").
     message: String,
+    /// Number of sub-steps completed so far.
     current: usize,
+    /// Total number of sub-steps across all queued PRs.
     total: usize,
 }
 
-/// Main application state
+/// Root application state for the inkrement TUI.
+///
+/// Owns all data needed to render the interface and handle user input.
+/// Constructed once at startup and mutated in response to key events
+/// and background worker progress updates.
 pub(crate) struct App {
+    /// Which tab is currently displayed.
     tab: Tab,
+    /// The list of PRs shown in the Get tab.
     prs: Vec<PrRow>,
+    /// Ratatui table selection state (tracks cursor position).
     table_state: TableState,
+    /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
+    /// Set to true when the user presses 'q' to exit.
     should_quit: bool,
 }
 
 impl App {
-    /// Create a new app with mock data for now
+    /// Create a new app with mock data for development.
+    ///
+    /// TODO: Replace with real data from GitHub + reMarkable on startup.
     pub(crate) fn new() -> Self {
         let prs = vec![
             PrRow {
@@ -97,19 +125,27 @@ impl App {
         }
     }
 
-    /// Run the TUI event loop
+    /// Run the TUI event loop.
+    ///
+    /// Alternates between rendering a frame and blocking on user input.
+    /// Returns when the user presses 'q' or an error occurs.
     pub(crate) fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while !self.should_quit {
             terminal
                 .draw(|frame| self.render(frame))
                 .wrap_err("failed to draw frame")?;
-            self.handle_events().wrap_err("failed to handle events")?;
+            self.handle_events()
+                .wrap_err("while drawing TUI, failed to handle events")?;
         }
         Ok(())
     }
 
+    // === Event handling ===
+
+    /// Read and dispatch a single terminal event.
     fn handle_events(&mut self) -> Result<()> {
-        let Event::Key(key) = event::read().wrap_err("failed to read event")? else {
+        let Event::Key(key) = event::read().wrap_err("while drawing TUI, failed to read event")?
+        else {
             return Ok(());
         };
 
@@ -132,6 +168,7 @@ impl App {
         Ok(())
     }
 
+    /// Move the table cursor up (negative) or down (positive), clamping to bounds.
     fn move_cursor(&mut self, delta: i32) {
         if self.prs.is_empty() {
             return;
@@ -141,13 +178,16 @@ impl App {
         self.table_state.select(Some(next));
     }
 
+    /// Toggle the selected PR between Available and Queued.
+    /// Does nothing if the PR is already Uploaded.
     fn toggle_selected(&mut self) {
         let Some(idx) = self.table_state.selected() else {
             return;
         };
+
         let pr = &mut self.prs[idx];
         if pr.status == PrStatus::Uploaded {
-            return; // Can't toggle uploaded PRs
+            return;
         }
         pr.status = match pr.status {
             PrStatus::Available => PrStatus::Queued,
@@ -156,6 +196,7 @@ impl App {
         };
     }
 
+    /// Queue all available (non-uploaded) PRs for upload.
     fn select_all(&mut self) {
         for pr in &mut self.prs {
             if pr.status == PrStatus::Available {
@@ -164,6 +205,7 @@ impl App {
         }
     }
 
+    /// Cycle to the next tab.
     fn next_tab(&mut self) {
         self.tab = match self.tab {
             Tab::GetPrs => Tab::PublishReviews,
@@ -171,20 +213,23 @@ impl App {
         };
     }
 
+    /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
     fn execute(&mut self) {
         // TODO: spawn background worker for queued uploads
     }
 
     // === Rendering ===
 
+    /// Top-level render function. Splits the terminal into vertical sections
+    /// and delegates each to a specialized render method.
     fn render(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1), // version bar
                 Constraint::Length(2), // tabs
-                Constraint::Min(5),   // main content
-                Constraint::Length(3), // legend + keybinds
+                Constraint::Min(5),    // main content
+                Constraint::Length(3), // keybinds
                 Constraint::Length(2), // progress bar
             ])
             .split(frame.area());
@@ -196,19 +241,28 @@ impl App {
         self.render_progress(frame, chunks[4]);
     }
 
+    /// Render the version string right-aligned at the top of the screen.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled(
-                "inkrement v0.1",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]))
-        .alignment(ratatui::layout::Alignment::Right);
+        let header = Paragraph::new(Line::from(vec![Span::styled(
+            concat!("inkrement v", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        )]))
+        .alignment(Alignment::Right);
         frame.render_widget(header, area);
     }
 
+    /// Returns the accent color for the currently active tab.
+    fn tab_color(&self) -> Color {
+        match self.tab {
+            Tab::GetPrs => Color::Green,
+            Tab::PublishReviews => Color::Blue,
+        }
+    }
+
+    /// Render the tab bar with colored active tab and matching separator line.
     fn render_tabs(&self, frame: &mut Frame, area: Rect) {
         let tab_names = ["Get PRs", "Publish Reviews"];
+        let tab_colors = [Color::Green, Color::Blue];
         let selected = match self.tab {
             Tab::GetPrs => 0,
             Tab::PublishReviews => 1,
@@ -219,23 +273,28 @@ impl App {
             .enumerate()
             .flat_map(|(i, name)| {
                 let style = if i == selected {
-                    Style::default().fg(Color::White).bold().add_modifier(Modifier::UNDERLINED)
+                    Style::default().fg(Color::Black).bg(tab_colors[i]).bold()
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
-                let mut items = vec![Span::styled(*name, style)];
+                let label = format!(" {name} ");
+                let mut items = vec![Span::styled(label, style)];
                 if i < tab_names.len() - 1 {
-                    items.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
+                    items.push(Span::raw("  "));
                 }
                 items
             })
             .collect();
 
-        let tabs = Paragraph::new(Line::from(spans))
-            .block(Block::default().borders(Borders::BOTTOM));
+        let tabs = Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(self.tab_color())),
+        );
         frame.render_widget(tabs, area);
     }
 
+    /// Dispatch to the appropriate tab renderer.
     fn render_main(&mut self, frame: &mut Frame, area: Rect) {
         match self.tab {
             Tab::GetPrs => self.render_get_tab(frame, area),
@@ -243,13 +302,14 @@ impl App {
         }
     }
 
+    /// Render the "Get PRs" tab: section title, legend, PR selection table, and scrollbar.
     fn render_get_tab(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2), // title
                 Constraint::Length(1), // legend
-                Constraint::Min(3),   // table
+                Constraint::Min(3),    // table
             ])
             .split(area);
 
@@ -259,7 +319,7 @@ impl App {
             .centered();
         frame.render_widget(title, chunks[0]);
 
-        // Legend
+        // Legend explaining checkbox states
         let legend = Paragraph::new(Line::from(vec![
             Span::styled(" [✓]", Style::default().fg(Color::Green)),
             Span::raw(" on reMarkable  "),
@@ -268,17 +328,20 @@ impl App {
         ]));
         frame.render_widget(legend, chunks[1]);
 
-        // Table
+        // Column headers
         let header = Row::new(vec!["", "#", "Repository", "SHA", "+", "-"])
             .style(Style::default().fg(Color::Gray))
             .bottom_margin(1);
 
+        // Build one row per PR with colored checkbox and diff stats
         let rows: Vec<Row> = self
             .prs
             .iter()
             .map(|pr| {
                 let checkbox = match pr.status {
-                    PrStatus::Uploaded => Cell::from("[✓]").style(Style::default().fg(Color::Green)),
+                    PrStatus::Uploaded => {
+                        Cell::from("[✓]").style(Style::default().fg(Color::Green))
+                    }
                     PrStatus::Queued => Cell::from("[x]").style(Style::default().fg(Color::Yellow)),
                     PrStatus::Available => Cell::from("[ ]"),
                 };
@@ -294,10 +357,8 @@ impl App {
                     Cell::from(format!("#{}", pr.number)),
                     Cell::from(pr.repo.as_str()),
                     Cell::from(pr.short_sha.as_str()),
-                    Cell::from(format!("+{}", pr.added))
-                        .style(Style::default().fg(Color::Green)),
-                    Cell::from(format!("-{}", pr.removed))
-                        .style(Style::default().fg(Color::Red)),
+                    Cell::from(format!("+{}", pr.added)).style(Style::default().fg(Color::Green)),
+                    Cell::from(format!("-{}", pr.removed)).style(Style::default().fg(Color::Red)),
                 ])
                 .style(style)
             })
@@ -308,7 +369,7 @@ impl App {
             [
                 Constraint::Length(5),  // checkbox
                 Constraint::Length(6),  // number
-                Constraint::Min(20),   // repo
+                Constraint::Min(20),    // repo
                 Constraint::Length(10), // sha
                 Constraint::Length(8),  // added
                 Constraint::Length(8),  // removed
@@ -320,10 +381,10 @@ impl App {
 
         frame.render_stateful_widget(table, chunks[2], &mut self.table_state);
 
-        // Scrollbar
+        // Scrollbar on the right edge of the table
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        let mut scrollbar_state = ScrollbarState::new(self.prs.len())
-            .position(self.table_state.selected().unwrap_or(0));
+        let mut scrollbar_state =
+            ScrollbarState::new(self.prs.len()).position(self.table_state.selected().unwrap_or(0));
         frame.render_stateful_widget(
             scrollbar,
             chunks[2].inner(ratatui::layout::Margin {
@@ -334,13 +395,19 @@ impl App {
         );
     }
 
+    /// Render the "Publish Reviews" tab (placeholder for now).
     fn render_publish_tab(&self, frame: &mut Frame, area: Rect) {
         let placeholder = Paragraph::new("  Coming soon...")
             .style(Style::default().fg(Color::DarkGray))
-            .block(Block::default().borders(Borders::ALL).title(" Publish Reviews "));
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Publish Reviews "),
+            );
         frame.render_widget(placeholder, area);
     }
 
+    /// Render the keybind help bar at the bottom of the screen.
     fn render_footer(&self, frame: &mut Frame, area: Rect) {
         let legend = Line::from(vec![
             Span::styled("[space]", Style::default().bold()),
@@ -360,6 +427,10 @@ impl App {
         frame.render_widget(footer, area);
     }
 
+    /// Render the progress bar and status message at the very bottom.
+    ///
+    /// Only visible when a background operation is in progress.
+    /// Shows a human-readable status line and a gauge bar with step count.
     fn render_progress(&self, frame: &mut Frame, area: Rect) {
         match &self.progress {
             Some(progress) => {
@@ -380,10 +451,7 @@ impl App {
                 let gauge = Gauge::default()
                     .gauge_style(Style::default().fg(Color::Cyan))
                     .ratio(ratio)
-                    .label(format!(
-                        "{}/{} steps",
-                        progress.current, progress.total
-                    ));
+                    .label(format!("{}/{} steps", progress.current, progress.total));
                 frame.render_widget(gauge, chunks[1]);
             }
             None => {
