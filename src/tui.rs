@@ -10,8 +10,10 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
 
 use crate::{
+    pdf::Pdf,
     pull_changes::{PullRequest, PullRequests},
     remarkable::RemarkableClient,
+    review_data::ReviewData,
 };
 use ratatui::{
     DefaultTerminal, Frame,
@@ -144,54 +146,28 @@ impl From<bool> for RemarkableStatus {
 /// Determines how the row is displayed and whether it can be toggled.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PrStatus {
-    /// Not yet selected — can be toggled with space.
+    /// Not yet selected -can be toggled with space.
     Available,
-    /// Marked for upload this session — will be processed on enter.
+    /// Marked for upload this session -will be processed on enter.
     Queued,
-    /// Already present on the reMarkable — cannot be toggled.
+    /// Already present on the reMarkable -cannot be toggled.
     Uploaded,
 }
 
-/// A single row in the PR selection table.
+/// A lightweight view of a PR in the selection table.
 ///
-/// Represents a pull request awaiting review, along with its upload status.
+/// Holds an index into the `PullRequests.pull_requests` slice for access
+/// to the full data when needed (e.g. rendering PDFs), plus the upload status.
 struct PrRow {
-    /// GitHub PR number.
-    number: u32,
-    /// Repository in `owner/name` format.
-    repo: String,
-    /// First 8 characters of the head commit SHA.
-    short_sha: String,
-    /// Total lines added in the diff.
-    added: usize,
-    /// Total lines removed in the diff.
-    removed: usize,
+    /// Index into the PullRequests.pull_requests slice.
+    pr_index: usize,
     /// Whether this PR is available, queued, or already uploaded.
     status: PrStatus,
 }
 
 impl PrRow {
-    /// Build a PrRow from a PullRequest, checking if it's already on the reMarkable.
-    fn from_pr(pr: &PullRequest, existing_filenames: &HashSet<String>) -> Self {
-        let short_sha = &pr.head_ref_oid[..8.min(pr.head_ref_oid.len())];
-        let status = if existing_filenames.contains(&pr.pdf_filename()) {
-            PrStatus::Uploaded
-        } else {
-            PrStatus::Available
-        };
-
-        Self {
-            number: pr.number,
-            repo: pr.repo_name.clone(),
-            short_sha: short_sha.to_string(),
-            added: pr.additions,
-            removed: pr.deletions,
-            status,
-        }
-    }
-
-    /// Render this PR as a table row with colored checkbox and diff stats.
-    fn to_row(&self) -> Row<'_> {
+    /// Render this PR as a table row, pulling display data from the full PullRequest.
+    fn to_row<'a>(&self, pr: &'a PullRequest) -> Row<'a> {
         let checkbox = match self.status {
             PrStatus::Uploaded => Cell::from("[✓]").style(Style::default().fg(Color::Green)),
             PrStatus::Queued => Cell::from("[x]").style(Style::default().fg(Color::Yellow)),
@@ -203,38 +179,49 @@ impl PrRow {
             _ => Style::default(),
         };
 
+        let short_sha = &pr.head_ref_oid[..8.min(pr.head_ref_oid.len())];
+
         Row::new(vec![
             checkbox,
-            Cell::from(format!("#{}", self.number)),
-            Cell::from(self.repo.as_str()),
-            Cell::from(self.short_sha.as_str()),
-            Cell::from(format!("+{}", self.added)).style(Style::default().fg(Color::Green)),
-            Cell::from(format!("-{}", self.removed)).style(Style::default().fg(Color::Red)),
+            Cell::from(format!("#{}", pr.number)),
+            Cell::from(pr.repo_name.as_str()),
+            Cell::from(short_sha),
+            Cell::from(format!("+{}", pr.additions)).style(Style::default().fg(Color::Green)),
+            Cell::from(format!("-{}", pr.deletions)).style(Style::default().fg(Color::Red)),
         ])
         .style(base_style)
     }
 }
 
-/// Messages sent from background loading threads to the TUI event loop.
-enum LoadingMessage {
+/// Messages sent from background threads to the TUI event loop.
+enum BackgroundMessage {
     /// A status update to display while loading (e.g. "Fetching PRs from GitHub...").
-    Status(String),
+    LoadingStatus(String),
     /// GitHub PR data has been fetched (or failed).
     PrsLoaded(Result<PullRequests>),
     /// reMarkable connection + document listing result.
     RemarkableLoaded(Result<(RemarkableStatus, Vec<String>)>),
+    /// Upload progress update: (current_step, total_steps, message).
+    UploadProgress(usize, usize, String),
+    /// A single PR upload completed (index into prs vec).
+    UploadedPr(usize),
+    /// All uploads finished.
+    UploadComplete,
+    /// Upload failed with error.
+    UploadError(String),
 }
 
 /// Tracks the state of an ongoing background operation (render + upload).
 ///
-/// Displayed as a status message and progress bar at the bottom of the TUI.
+/// Displayed as a status line and progress bar at the bottom of the TUI.
+/// Each PR has 4 sub-steps: fetch diff, fetch sources, render PDF, upload.
 struct Progress {
-    /// Human-readable description of the current step (e.g. "Rendering #72 crab-rave...").
+    /// Human-readable description of the current step.
     message: String,
-    /// Number of sub-steps completed so far.
-    current: usize,
-    /// Total number of sub-steps across all queued PRs.
-    total: usize,
+    /// Current sub-step across all PRs (0-based).
+    current_step: usize,
+    /// Total sub-steps across all PRs (prs * 4).
+    total_steps: usize,
 }
 
 /// Root application state for the inkrement TUI.
@@ -247,16 +234,22 @@ pub(crate) struct App {
     tab: Tab,
     /// The list of PRs shown in the Get tab.
     prs: Vec<PrRow>,
+    /// The full PR data from GitHub (needed for rendering PDFs).
+    pull_requests: Option<PullRequests>,
     /// Ratatui table selection state (tracks cursor position).
     table_state: TableState,
     /// Whether the reMarkable is reachable via USB.
     remarkable_status: RemarkableStatus,
     /// Filenames of inkrement docs already on the reMarkable.
     existing_filenames: HashSet<String>,
-    /// Receiver for messages from background loading threads.
-    loading_rx: Receiver<LoadingMessage>,
+    /// Sender for background messages (cloned into worker threads).
+    bg_tx: mpsc::Sender<BackgroundMessage>,
+    /// Receiver for messages from background threads.
+    bg_rx: Receiver<BackgroundMessage>,
     /// Status message shown during loading.
     loading_message: Option<String>,
+    /// Number of loading tasks still outstanding.
+    loading_pending: usize,
     /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
     /// Set to true when the user presses 'q' to exit.
@@ -271,19 +264,20 @@ impl App {
     /// arrive via channel messages.
     pub(crate) fn new() -> Self {
         let (tx, rx) = mpsc::channel();
+        let tx_gh = tx.clone();
+        let tx_rm = tx.clone();
 
         // Spawn GitHub PR fetch
-        let tx_gh = tx.clone(); // Dev note: this increments reference count
         thread::spawn(move || {
-            let _ = tx_gh.send(LoadingMessage::Status(
+            let _ = tx_gh.send(BackgroundMessage::LoadingStatus(
                 "Fetching PRs from GitHub...".to_string(),
             ));
-            let _ = tx_gh.send(LoadingMessage::PrsLoaded(PullRequests::fetch()));
+            let _ = tx_gh.send(BackgroundMessage::PrsLoaded(PullRequests::fetch()));
         });
 
         // Spawn reMarkable connection check
         thread::spawn(move || {
-            let _ = tx.send(LoadingMessage::Status(
+            let _ = tx_rm.send(BackgroundMessage::LoadingStatus(
                 "Connecting to reMarkable...".to_string(),
             ));
             let result = RemarkableClient::connect().and_then(|rm| {
@@ -291,7 +285,7 @@ impl App {
                 let names = docs.into_iter().map(|d| d.visible_name).collect();
                 Ok((RemarkableStatus::Connected, names))
             });
-            let _ = tx.send(LoadingMessage::RemarkableLoaded(
+            let _ = tx_rm.send(BackgroundMessage::RemarkableLoaded(
                 result.or_else(|_| Ok((RemarkableStatus::Disconnected, Vec::new()))),
             ));
         });
@@ -299,11 +293,14 @@ impl App {
         Self {
             tab: Tab::GetPrs,
             prs: Vec::new(),
+            pull_requests: None,
             table_state: TableState::default(),
             remarkable_status: RemarkableStatus::Disconnected,
             existing_filenames: HashSet::new(),
-            loading_rx: rx,
+            bg_tx: tx,
+            bg_rx: rx,
             loading_message: Some("Starting up...".to_string()),
+            loading_pending: 2, // GitHub + reMarkable
             progress: None,
             should_quit: false,
         }
@@ -318,7 +315,7 @@ impl App {
             terminal
                 .draw(|frame| self.render(frame))
                 .wrap_err("failed to draw frame")?;
-            self.process_loading_messages();
+            self.process_background_messages();
             self.handle_events()
                 .wrap_err("while drawing TUI, failed to handle events")?;
         }
@@ -327,24 +324,34 @@ impl App {
 
     // === Background message processing ===
 
-    /// Drain all pending messages from background loading threads.
-    fn process_loading_messages(&mut self) {
-        while let Ok(msg) = self.loading_rx.try_recv() {
+    /// Drain all pending messages from background threads.
+    fn process_background_messages(&mut self) {
+        while let Ok(msg) = self.bg_rx.try_recv() {
             match msg {
-                LoadingMessage::Status(message) => {
+                BackgroundMessage::LoadingStatus(message) => {
                     self.loading_message = Some(message);
                 }
-                LoadingMessage::PrsLoaded(result) => {
+                BackgroundMessage::PrsLoaded(result) => {
                     match result {
                         Ok(pull_requests) => {
                             self.prs = pull_requests
                                 .pull_requests
                                 .iter()
-                                .map(|pr| PrRow::from_pr(pr, &self.existing_filenames))
+                                .enumerate()
+                                .map(|(i, pr)| PrRow {
+                                    pr_index: i,
+                                    status: if self.existing_filenames.contains(&pr.pdf_filename())
+                                    {
+                                        PrStatus::Uploaded
+                                    } else {
+                                        PrStatus::Available
+                                    },
+                                })
                                 .collect();
                             if !self.prs.is_empty() {
                                 self.table_state.select(Some(0));
                             }
+                            self.pull_requests = Some(pull_requests);
                         }
                         Err(e) => {
                             self.loading_message = Some(format!("Failed to load PRs: {e}"));
@@ -352,21 +359,18 @@ impl App {
                     }
                     self.check_loading_complete();
                 }
-                LoadingMessage::RemarkableLoaded(result) => {
+                BackgroundMessage::RemarkableLoaded(result) => {
                     match result {
                         Ok((status, filenames)) => {
                             self.remarkable_status = status;
                             self.existing_filenames = filenames.into_iter().collect();
                             // Re-check uploaded status for any already-loaded PRs
-                            for pr in &mut self.prs {
-                                if self.existing_filenames.contains(&format!(
-                                    "#{} {} [{}] {}.pdf",
-                                    pr.number,
-                                    pr.repo.replace('/', "-"),
-                                    pr.short_sha,
-                                    crate::pull_changes::INKREMENT_TAG,
-                                )) {
-                                    pr.status = PrStatus::Uploaded;
+                            if let Some(ref pull_requests) = self.pull_requests {
+                                for row in &mut self.prs {
+                                    let pr = &pull_requests.pull_requests[row.pr_index];
+                                    if self.existing_filenames.contains(&pr.pdf_filename()) {
+                                        row.status = PrStatus::Uploaded;
+                                    }
                                 }
                             }
                         }
@@ -377,14 +381,33 @@ impl App {
                     }
                     self.check_loading_complete();
                 }
+                BackgroundMessage::UploadProgress(current_step, total_steps, message) => {
+                    self.progress = Some(Progress {
+                        message,
+                        current_step,
+                        total_steps,
+                    });
+                }
+                BackgroundMessage::UploadedPr(pr_index) => {
+                    if let Some(row) = self.prs.iter_mut().find(|r| r.pr_index == pr_index) {
+                        row.status = PrStatus::Uploaded;
+                    }
+                }
+                BackgroundMessage::UploadComplete => {
+                    self.progress = None;
+                }
+                BackgroundMessage::UploadError(message) => {
+                    self.progress = None;
+                    self.loading_message = Some(format!("Upload failed: {message}"));
+                }
             }
         }
     }
 
-    /// Clear the loading message if all background tasks have completed.
+    /// Decrement the loading counter and clear the message when all tasks are done.
     fn check_loading_complete(&mut self) {
-        // If the channel is disconnected (all senders dropped), loading is done
-        if self.loading_rx.try_recv().is_err() {
+        self.loading_pending = self.loading_pending.saturating_sub(1);
+        if self.loading_pending == 0 {
             self.loading_message = None;
         }
     }
@@ -466,7 +489,126 @@ impl App {
 
     /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
     fn execute(&mut self) {
-        // TODO: spawn background worker for queued uploads
+        if self.remarkable_status != RemarkableStatus::Connected {
+            self.loading_message = Some("reMarkable not connected".to_string());
+            return;
+        }
+
+        let Some(ref pull_requests) = self.pull_requests else {
+            return;
+        };
+
+        // Collect the queued PR indices and corresponding data
+        let queued: Vec<(usize, String)> = self
+            .prs
+            .iter()
+            .filter(|row| row.status == PrStatus::Queued)
+            .map(|row| {
+                let pr = &pull_requests.pull_requests[row.pr_index];
+                (row.pr_index, pr.pdf_filename())
+            })
+            .collect();
+
+        if queued.is_empty() {
+            return;
+        }
+
+        let reviewer = pull_requests.reviewer.clone();
+        let total_steps = queued.len() * 4; // 4 steps per PR: diff, sources, render, upload
+        let tx = self.bg_tx.clone();
+
+        // TODO: Clone is only here to send PR data to the upload worker thread. Fix this.
+        let pr_data: Vec<(usize, PullRequest)> = queued
+            .iter()
+            .map(|(idx, _)| {
+                let pr = &pull_requests.pull_requests[*idx];
+                (*idx, pr.clone())
+            })
+            .collect();
+
+        thread::spawn(move || {
+            let rm = match RemarkableClient::connect() {
+                Ok(rm) => rm,
+                Err(e) => {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to connect to reMarkable: {e}"
+                    )));
+                    return;
+                }
+            };
+
+            let mut step = 0;
+
+            for (pr_index, pr) in &pr_data {
+                let name = format!("{}#{}", pr.repo_name, pr.number);
+
+                // Step 1: fetch diff
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Fetching diff for {name}..."),
+                ));
+                let patch = match pr.parse_diff() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                step += 1;
+
+                // Step 2: fetch source files
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Fetching source files for {name}..."),
+                ));
+                let source_files = match pr.fetch_source_files(&patch) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                step += 1;
+
+                // Step 3: render PDF
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Rendering PDF for {name}..."),
+                ));
+                let review_data = ReviewData::build(pr, &reviewer, &patch, &source_files);
+                let pdf = match Pdf::render(&review_data) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                step += 1;
+
+                // Step 4: upload to reMarkable
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Uploading {name} to reMarkable..."),
+                ));
+                let filename = pr.pdf_filename();
+                match rm.upload(&filename, &pdf) {
+                    Ok(()) => {
+                        let _ = tx.send(BackgroundMessage::UploadedPr(*pr_index));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                }
+                step += 1;
+            }
+
+            let _ = tx.send(BackgroundMessage::UploadComplete);
+        });
     }
 
     // === Rendering ===
@@ -558,12 +700,22 @@ impl App {
             .style(Style::default().fg(Color::Gray))
             .bottom_margin(1);
 
-        let rows = self.prs.iter().map(PrRow::to_row).collect_vec();
+        let empty_prs: Box<[PullRequest]> = Box::new([]);
+        let pr_data = self
+            .pull_requests
+            .as_ref()
+            .map(|prs| &prs.pull_requests)
+            .unwrap_or(&empty_prs);
 
-        let table = Table::new(rows, PR_TABLE_COLUMNS)
-            .header(header)
-            .block(Block::default().borders(Borders::ALL))
-            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let table = Table::new(
+            self.prs
+                .iter()
+                .map(|row| row.to_row(&pr_data[row.pr_index])),
+            PR_TABLE_COLUMNS,
+        )
+        .header(header)
+        .block(Block::default().borders(Borders::ALL))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         frame.render_stateful_widget(table, chunks[2], &mut self.table_state);
 
@@ -648,15 +800,14 @@ impl App {
                 .style(Style::default().fg(Color::Cyan));
             frame.render_widget(status, chunks[0]);
 
-            let ratio = if progress.total > 0 {
-                progress.current as f64 / progress.total as f64
+            let ratio = if progress.total_steps > 0 {
+                progress.current_step as f64 / progress.total_steps as f64
             } else {
                 0.0
             };
             let gauge = Gauge::default()
                 .gauge_style(Style::default().fg(Color::Cyan))
-                .ratio(ratio)
-                .label(format!("{}/{} steps", progress.current, progress.total));
+                .ratio(ratio);
             frame.render_widget(gauge, chunks[1]);
         }
     }
