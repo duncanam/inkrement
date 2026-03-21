@@ -42,7 +42,7 @@
     stroke: 0.5pt + light-gray,
     radius: 2pt,
   )[
-    #set par(leading: 0em)
+    #set par(leading: 0.4em)
     #show raw.line: it => {
       let idx = it.number - 1
       let no = line-nos.at(idx, default: none)
@@ -59,7 +59,6 @@
         width: 100%,
         fill: bg,
         inset: (x: 4pt, y: 2pt),
-        outset: (y: 1pt),
       )[
         #grid(
           columns: if bar-color != none { (24pt, auto, 1fr) } else { (28pt, 1fr) },
