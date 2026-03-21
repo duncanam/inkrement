@@ -185,6 +185,8 @@ struct PullRequests {
 impl PullRequests {
     /// Get the user's active pull requests
     fn fetch() -> Result<Self> {
+        let reviewer = fetch_current_user().wrap_err("could not get current user for reviewer")?;
+
         let search =
             SearchResponse::fetch().wrap_err("could not get list of active pull requests")?;
 
@@ -194,8 +196,6 @@ impl PullRequests {
             .map(PullRequest::try_from)
             .try_collect()
             .wrap_err("could not parse active pull requests")?;
-
-        let reviewer = fetch_current_user().wrap_err("could not get current user for reviewer")?;
 
         Ok(Self {
             pull_requests,
