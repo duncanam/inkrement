@@ -236,6 +236,22 @@
 ]
 
 // ============================================================================
+// Separator page - marks the end of reviewable content
+// ============================================================================
+#page[
+  #v(1fr)
+  #align(center)[
+    #text(size: 24pt, weight: "bold", fill: gray)[REFERENCE SOURCE CODE]
+    #v(0.2in)
+    #text(size: 11pt, fill: gray)[
+      The following pages contain full source files for reference only. \
+      No annotations on these pages will be processed.
+    ]
+  ]
+  #v(1fr)
+]
+
+// ============================================================================
 // Full source pages - old versions
 // ============================================================================
 #for (file-idx, file) in data.files.enumerate() [
