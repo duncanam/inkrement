@@ -103,7 +103,13 @@ pub(crate) struct PullRequest {
 impl PullRequest {
     /// Generate a PDF filename for this PR
     pub(crate) fn pdf_filename(&self) -> String {
-        format!("{}-{}.pdf", self.number, self.repo_name.replace('/', "-"))
+        let short_sha = &self.head_ref_oid[..8.min(self.head_ref_oid.len())];
+        format!(
+            "#{} {} [{}] inkcremental.pdf",
+            self.number,
+            self.repo_name.replace('/', "-"),
+            short_sha,
+        )
     }
 
     /// Fetch the git diff for a specific pull request
