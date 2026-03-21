@@ -100,29 +100,26 @@
 // ============================================================================
 #page[
   == Review
-  #v(1.2in)
+  #v(0.8in)
 
-  #align(center)[
-    #text(size: 22pt, weight: "bold", tracking: -0.5pt)[#data.title]
-    #v(0.15in)
-    #box(
-      inset: (x: 10pt, y: 5pt),
-      radius: 4pt,
-      fill: faint-gray,
-      stroke: 0.5pt + light-gray,
-    )[
-      #text(size: 11pt, fill: gray)[#data.repo]
-      #h(4pt)
-      #text(size: 11pt, weight: "bold")[\##str(data.number)]
+  // PR info box
+  #block(
+    width: 100%,
+    inset: 16pt,
+    radius: 6pt,
+    fill: faint-gray,
+    stroke: 0.5pt + light-gray,
+  )[
+    #align(center)[
+      #text(size: 22pt, weight: "bold", tracking: -0.5pt)[#data.title]
     ]
-  ]
 
-  #v(0.5in)
+    #v(0.3in)
 
-  #pad(x: 0.5in)[
     #grid(
       columns: (1in, 1fr),
       row-gutter: 10pt,
+      text(size: 9pt, fill: gray)[Pull Request], text(size: 9pt, weight: "bold")[#data.repo \##str(data.number)],
       text(size: 9pt, fill: gray)[Author], text(size: 9pt, weight: "bold")[#data.author],
       text(size: 9pt, fill: gray)[Reviewer], text(size: 9pt, weight: "bold")[#data.reviewer],
       text(size: 9pt, fill: gray)[Base], raw(data.base_ref),
@@ -132,7 +129,7 @@
     )
   ]
 
-  #v(0.5in)
+  #v(0.4in)
 
   #block(
     width: 100%,
