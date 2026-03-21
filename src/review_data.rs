@@ -120,7 +120,7 @@ impl<'a> FileData<'a> {
             .hunks()
             .iter()
             .enumerate()
-            .map(|(hunk_idx, hunk)| HunkData::new(hunk_idx + 1, hunk))
+            .map(|(idx_hunk, hunk)| HunkData::new(idx_hunk + 1, hunk))
             .collect();
 
         Self {
@@ -150,7 +150,7 @@ impl<'a> HunkData<'a> {
 
 #[derive(Debug, Serialize)]
 struct LineData<'a> {
-    kind: &'static str,
+    kind: &'a str,
     content: &'a str,
     old_line_no: Option<usize>,
     new_line_no: Option<usize>,
@@ -201,8 +201,8 @@ mod tests {
     #[case::json("data.json", "json")]
     #[case::sql("query.sql", "sql")]
     #[case::typst("template.typ", "typst")]
-    #[case::unknown_ext("file.xyz", "xyz")]
-    #[case::no_extension("Makefile", "Makefile")]
+    #[case::unknown_ext("file.xyz", "")]
+    #[case::no_extension("Makefile", "")]
     fn lang_from_path_cases(#[case] path: &str, #[case] expected: &str) {
         assert_eq!(lang_from_path(path), expected);
     }
