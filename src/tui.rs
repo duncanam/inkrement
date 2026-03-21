@@ -1,5 +1,6 @@
 use color_eyre::eyre::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use itertools::Itertools;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -10,6 +11,54 @@ use ratatui::{
         ScrollbarState, Table, TableState,
     },
 };
+
+// === Layout constants ===
+
+/// Top-level vertical layout: version bar, tabs, main content, keybinds, progress.
+const MAIN_LAYOUT: [Constraint; 5] = [
+    Constraint::Length(1), // version bar
+    Constraint::Length(2), // tabs
+    Constraint::Min(5),    // main content
+    Constraint::Length(3), // keybinds
+    Constraint::Length(2), // progress bar
+];
+
+/// Get tab vertical layout: title, legend, table.
+const GET_TAB_LAYOUT: [Constraint; 3] = [
+    Constraint::Length(2), // title
+    Constraint::Length(1), // legend
+    Constraint::Min(3),    // table
+];
+
+/// PR table column widths.
+const PR_TABLE_COLUMNS: [Constraint; 6] = [
+    Constraint::Length(5),  // checkbox
+    Constraint::Length(6),  // number
+    Constraint::Min(20),    // repo
+    Constraint::Length(10), // sha
+    Constraint::Length(8),  // added
+    Constraint::Length(8),  // removed
+];
+
+/// Progress bar layout: status line + gauge.
+const PROGRESS_LAYOUT: [Constraint; 2] = [Constraint::Length(1), Constraint::Length(1)];
+
+// === Tab configuration ===
+
+/// Tab display names, in order.
+const TAB_NAMES: [&str; 2] = ["Get PRs", "Publish Reviews"];
+
+/// Accent colors for each tab, matching TAB_NAMES order.
+const TAB_COLORS: [Color; 2] = [Color::Green, Color::Blue];
+
+/// PR table column headers.
+const PR_TABLE_HEADERS: [&str; 6] = ["", "#", "Repository", "SHA", "+", "-"];
+
+/// Version string shown in the top-right corner.
+const VERSION_LABEL: &str = concat!("inkrement v", env!("CARGO_PKG_VERSION"));
+
+/// Section title for the Get tab.
+const GET_TAB_TITLE: &str = "Pull Requests Awaiting Review";
 
 /// The active tab in the TUI.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +98,33 @@ struct PrRow {
     removed: usize,
     /// Whether this PR is available, queued, or already uploaded.
     status: PrStatus,
+}
+
+impl PrRow {
+    /// Render this PR as a table row with colored checkbox and diff stats.
+    fn to_row(&self) -> Row<'_> {
+        let checkbox = match self.status {
+            PrStatus::Uploaded => Cell::from("[✓]").style(Style::default().fg(Color::Green)),
+            PrStatus::Queued => Cell::from("[x]").style(Style::default().fg(Color::Yellow)),
+            PrStatus::Available => Cell::from("[ ]"),
+        };
+
+        let base_style = if self.status == PrStatus::Uploaded {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+
+        Row::new(vec![
+            checkbox,
+            Cell::from(format!("#{}", self.number)),
+            Cell::from(self.repo.as_str()),
+            Cell::from(self.short_sha.as_str()),
+            Cell::from(format!("+{}", self.added)).style(Style::default().fg(Color::Green)),
+            Cell::from(format!("-{}", self.removed)).style(Style::default().fg(Color::Red)),
+        ])
+        .style(base_style)
+    }
 }
 
 /// Tracks the state of an ongoing background operation (render + upload).
@@ -225,13 +301,7 @@ impl App {
     fn render(&mut self, frame: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // version bar
-                Constraint::Length(2), // tabs
-                Constraint::Min(5),    // main content
-                Constraint::Length(3), // keybinds
-                Constraint::Length(2), // progress bar
-            ])
+            .constraints(MAIN_LAYOUT)
             .split(frame.area());
 
         self.render_header(frame, chunks[0]);
@@ -243,10 +313,10 @@ impl App {
 
     /// Render the version string right-aligned at the top of the screen.
     fn render_header(&self, frame: &mut Frame, area: Rect) {
-        let header = Paragraph::new(Line::from(vec![Span::styled(
-            concat!("inkrement v", env!("CARGO_PKG_VERSION")),
+        let header = Paragraph::new(Span::styled(
+            VERSION_LABEL,
             Style::default().fg(Color::DarkGray),
-        )]))
+        ))
         .alignment(Alignment::Right);
         frame.render_widget(header, area);
     }
@@ -261,30 +331,28 @@ impl App {
 
     /// Render the tab bar with colored active tab and matching separator line.
     fn render_tabs(&self, frame: &mut Frame, area: Rect) {
-        let tab_names = ["Get PRs", "Publish Reviews"];
-        let tab_colors = [Color::Green, Color::Blue];
         let selected = match self.tab {
             Tab::GetPrs => 0,
             Tab::PublishReviews => 1,
         };
 
-        let spans: Vec<Span> = tab_names
+        let spans = TAB_NAMES
             .iter()
             .enumerate()
             .flat_map(|(i, name)| {
                 let style = if i == selected {
-                    Style::default().fg(Color::Black).bg(tab_colors[i]).bold()
+                    Style::default().fg(Color::Black).bg(TAB_COLORS[i]).bold()
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
                 let label = format!(" {name} ");
                 let mut items = vec![Span::styled(label, style)];
-                if i < tab_names.len() - 1 {
+                if i < TAB_NAMES.len() - 1 {
                     items.push(Span::raw("  "));
                 }
                 items
             })
-            .collect();
+            .collect_vec();
 
         let tabs = Paragraph::new(Line::from(spans)).block(
             Block::default()
@@ -306,20 +374,14 @@ impl App {
     fn render_get_tab(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2), // title
-                Constraint::Length(1), // legend
-                Constraint::Min(3),    // table
-            ])
+            .constraints(GET_TAB_LAYOUT)
             .split(area);
 
-        // Section title
-        let title = Paragraph::new("Pull Requests Awaiting Review")
+        let title = Paragraph::new(GET_TAB_TITLE)
             .style(Style::default().bold())
             .centered();
         frame.render_widget(title, chunks[0]);
 
-        // Legend explaining checkbox states
         let legend = Paragraph::new(Line::from(vec![
             Span::styled(" [✓]", Style::default().fg(Color::Green)),
             Span::raw(" on reMarkable  "),
@@ -328,56 +390,16 @@ impl App {
         ]));
         frame.render_widget(legend, chunks[1]);
 
-        // Column headers
-        let header = Row::new(vec!["", "#", "Repository", "SHA", "+", "-"])
+        let header = Row::new(PR_TABLE_HEADERS.to_vec())
             .style(Style::default().fg(Color::Gray))
             .bottom_margin(1);
 
-        // Build one row per PR with colored checkbox and diff stats
-        let rows: Vec<Row> = self
-            .prs
-            .iter()
-            .map(|pr| {
-                let checkbox = match pr.status {
-                    PrStatus::Uploaded => {
-                        Cell::from("[✓]").style(Style::default().fg(Color::Green))
-                    }
-                    PrStatus::Queued => Cell::from("[x]").style(Style::default().fg(Color::Yellow)),
-                    PrStatus::Available => Cell::from("[ ]"),
-                };
+        let rows = self.prs.iter().map(PrRow::to_row).collect_vec();
 
-                let style = if pr.status == PrStatus::Uploaded {
-                    Style::default().fg(Color::DarkGray)
-                } else {
-                    Style::default()
-                };
-
-                Row::new(vec![
-                    checkbox,
-                    Cell::from(format!("#{}", pr.number)),
-                    Cell::from(pr.repo.as_str()),
-                    Cell::from(pr.short_sha.as_str()),
-                    Cell::from(format!("+{}", pr.added)).style(Style::default().fg(Color::Green)),
-                    Cell::from(format!("-{}", pr.removed)).style(Style::default().fg(Color::Red)),
-                ])
-                .style(style)
-            })
-            .collect();
-
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Length(5),  // checkbox
-                Constraint::Length(6),  // number
-                Constraint::Min(20),    // repo
-                Constraint::Length(10), // sha
-                Constraint::Length(8),  // added
-                Constraint::Length(8),  // removed
-            ],
-        )
-        .header(header)
-        .block(Block::default().borders(Borders::ALL))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        let table = Table::new(rows, PR_TABLE_COLUMNS)
+            .header(header)
+            .block(Block::default().borders(Borders::ALL))
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
         frame.render_stateful_widget(table, chunks[2], &mut self.table_state);
 
@@ -436,7 +458,7 @@ impl App {
             Some(progress) => {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .constraints(PROGRESS_LAYOUT)
                     .split(area);
 
                 let status = Paragraph::new(format!("  {}", progress.message))
