@@ -39,7 +39,7 @@ fn lang_from_path(path: &str) -> &'static str {
 }
 
 #[derive(Debug, Serialize)]
-struct ReviewData<'a> {
+pub(crate) struct ReviewData<'a> {
     title: &'a str,
     repo: &'a str,
     number: u32,

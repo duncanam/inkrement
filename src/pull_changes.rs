@@ -16,9 +16,7 @@ impl SearchResponse {
         let output = Command::new("gh")
             .args([
                 "api",
-                "/search/issues",
-                "-f",
-                "q=is:pr is:open review-requested:@me",
+                "search/issues?q=is:pr+is:open+review-requested:@me",
             ])
             .output()
             .wrap_err("failed to run gh CLI")?;
@@ -177,14 +175,14 @@ impl TryFrom<SearchPullRequest> for PullRequest {
 
 /// All active pull requests
 #[derive(Debug)]
-struct PullRequests {
-    pull_requests: Box<[PullRequest]>,
-    reviewer: String,
+pub(crate) struct PullRequests {
+    pub(crate) pull_requests: Box<[PullRequest]>,
+    pub(crate) reviewer: String,
 }
 
 impl PullRequests {
     /// Get the user's active pull requests
-    fn fetch() -> Result<Self> {
+    pub(crate) fn fetch() -> Result<Self> {
         let reviewer = fetch_current_user().wrap_err("could not get current user for reviewer")?;
 
         let search =

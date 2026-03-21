@@ -1,5 +1,9 @@
+use std::{fs, path::PathBuf};
+
 use clap::{Parser, Subcommand};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Context, Result};
+
+use crate::{pdf, pull_changes::PullRequests, review_data::ReviewData};
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +40,12 @@ pub struct Cli {
 enum Command {
     /// Gets new review changes from Github and posts finished reviews
     Sync,
+    /// Generate review PDFs locally for preview (no reMarkable needed)
+    Generate {
+        /// Output directory for generated PDFs
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+    },
 }
 
 impl Cli {
@@ -44,6 +54,28 @@ impl Cli {
         match self.command {
             Command::Sync => {
                 todo!("implement sync")
+            }
+            Command::Generate { output } => {
+                let prs = PullRequests::fetch()?;
+
+                fs::create_dir_all(&output)
+                    .wrap_err("failed to create output directory")?;
+
+                for pr in prs.pull_requests.into_vec() {
+                    let patch = pr.parse_diff()?;
+                    let source_files = pr.fetch_source_files(&patch)?;
+                    let review_data = ReviewData::build(&pr, &prs.reviewer, &patch, &source_files);
+                    let pdf_bytes = pdf::render(&review_data)?;
+
+                    let filename = format!("{}-{}.pdf", pr.number, pr.repo_name.replace('/', "-"));
+                    let path = output.join(&filename);
+                    fs::write(&path, &pdf_bytes)
+                        .wrap_err_with(|| format!("failed to write {}", path.display()))?;
+
+                    println!("Generated: {}", path.display());
+                }
+
+                Ok(())
             }
         }
     }

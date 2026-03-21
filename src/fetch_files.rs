@@ -27,8 +27,6 @@ fn fetch_file_at_ref(repo_name: &str, path: &str, git_ref: &str) -> Result<Strin
         .args([
             "api",
             &api_path,
-            "-q",
-            ".content",
             "-H",
             "Accept: application/vnd.github.raw+json",
         ])
@@ -55,15 +53,14 @@ impl PullRequest {
             .iter()
             .filter(|file| !file.is_added_file())
             .map(|file| -> Result<SourceFile> {
-                let path = file.path();
+                let path = file.source_file.strip_prefix("a/")
+                    .unwrap_or(&file.source_file)
+                    .to_string();
 
                 let content = fetch_file_at_ref(&self.repo_name, &path, &self.base_ref_oid)
                     .wrap_err_with(|| format!("failed to fetch old version of {path}"))?;
 
-                Ok(SourceFile {
-                    path: path.clone(),
-                    content,
-                })
+                Ok(SourceFile { path, content })
             })
             .try_collect()?;
 
@@ -72,15 +69,14 @@ impl PullRequest {
             .iter()
             .filter(|file| !file.is_removed_file())
             .map(|file| -> Result<SourceFile> {
-                let path = file.path();
+                let path = file.target_file.strip_prefix("b/")
+                    .unwrap_or(&file.target_file)
+                    .to_string();
 
                 let content = fetch_file_at_ref(&self.repo_name, &path, &self.head_ref_oid)
                     .wrap_err_with(|| format!("failed to fetch new version of {path}"))?;
 
-                Ok(SourceFile {
-                    path: path.clone(),
-                    content,
-                })
+                Ok(SourceFile { path, content })
             })
             .try_collect()?;
 

@@ -13,7 +13,7 @@ fn parse_diff(input: &str) -> Result<PatchSet> {
 
 impl PullRequest {
     /// Parse the diff string into a structured set of changes
-    fn parse_diff(&self) -> Result<PatchSet> {
+    pub(crate) fn parse_diff(&self) -> Result<PatchSet> {
         let diff = self
             .fetch_diff()
             .wrap_err("could not fetch diff while generating parsed diff")?;
