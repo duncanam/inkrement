@@ -60,15 +60,15 @@ impl<'a> ReviewData<'a> {
         patch: &'a PatchSet,
         source_files: &'a SourceFiles,
     ) -> Self {
-        let lines_added = patch.files().iter().map(|f| f.added()).sum();
-        let lines_removed = patch.files().iter().map(|f| f.removed()).sum();
-
-        let files = patch
+        let files: Box<_> = patch
             .files()
             .iter()
             .enumerate()
             .map(|(idx, file)| FileData::new(idx, file, source_files))
             .collect();
+
+        let lines_added = files.iter().map(|f| f.added).sum();
+        let lines_removed = files.iter().map(|f| f.removed).sum();
 
         Self {
             title: &pr.title,
@@ -89,6 +89,8 @@ impl<'a> ReviewData<'a> {
 struct FileData<'a> {
     path: String,
     lang: &'a str,
+    added: usize,
+    removed: usize,
     hunks: Box<[HunkData<'a>]>,
     old_source: Option<&'a str>,
     new_source: Option<&'a str>,
@@ -126,6 +128,8 @@ impl<'a> FileData<'a> {
         Self {
             path,
             lang,
+            added: file.added(),
+            removed: file.removed(),
             hunks,
             old_source,
             new_source,

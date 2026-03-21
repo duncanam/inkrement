@@ -169,8 +169,22 @@
   #v(0.15in)
 
   #for (i, file) in data.files.enumerate() [
-    #link(label("file-" + str(i) + "-0"))[#text(size: 10pt)[#file.path]] \
-    #v(2pt)
+    #link(label("file-" + str(i) + "-0"))[
+      #block(
+        width: 100%,
+        inset: (x: 10pt, y: 8pt),
+        radius: 4pt,
+        fill: faint-gray,
+        stroke: 0.5pt + light-gray,
+      )[
+        #text(size: 10pt, weight: "bold")[#file.path]
+        #h(1fr)
+        #text(size: 8pt, fill: green, weight: "bold")[+#str(file.added)]
+        #h(4pt)
+        #text(size: 8pt, fill: red, weight: "bold")[-#str(file.removed)]
+      ]
+    ]
+    #v(4pt)
   ]
 ]
 
