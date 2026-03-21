@@ -35,6 +35,7 @@ struct InkrementWorld {
 }
 
 impl InkrementWorld {
+    /// Create a new Typst world for Inkrement
     fn new(review_data: &ReviewData) -> Result<Self> {
         let json = serde_json::to_string(review_data).map_err(|e| {
             eyre!("failed to serialize review data while creating typst World: {e}")
@@ -47,16 +48,17 @@ impl InkrementWorld {
         let data_bytes = Bytes::from_string(json);
 
         // Load embedded fonts
-        let mut font_book = FontBook::new();
-        let mut fonts = Vec::new();
-
-        for font_data in [FONT_JETBRAINS_MONO, FONT_JETBRAINS_MONO_BOLD, FONT_INTER] {
-            let buffer = Bytes::new(font_data);
-            for font in Font::iter(buffer) {
-                font_book.push(font.info().clone());
-                fonts.push(font);
-            }
-        }
+        let (font_book, fonts) = [FONT_JETBRAINS_MONO, FONT_JETBRAINS_MONO_BOLD, FONT_INTER]
+            .into_iter()
+            .flat_map(|data| Font::iter(Bytes::new(data)))
+            .fold(
+                (FontBook::new(), Vec::new()),
+                |(mut book, mut fonts), font| {
+                    book.push(font.info().clone());
+                    fonts.push(font);
+                    (book, fonts)
+                },
+            );
 
         let library = LazyHash::new(Library::default());
         let book = LazyHash::new(font_book);
