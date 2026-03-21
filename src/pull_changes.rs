@@ -197,7 +197,10 @@ impl PullRequests {
 
         let reviewer = fetch_current_user().wrap_err("could not get current user for reviewer")?;
 
-        Ok(Self(prs))
+        Ok(Self {
+            pull_requests,
+            reviewer,
+        })
     }
 }
 
