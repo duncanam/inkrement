@@ -92,7 +92,8 @@ struct GitHubUser {
 /// # Note
 /// This differs from PullRequestResponse due to requiring the repo_name which is not in the JSON
 /// payload delivered by Github and requires parsing
-#[derive(Debug)]
+// TODO: Clone is only here to send PR data to the upload worker thread. Fix this.
+#[derive(Debug, Clone)]
 pub(crate) struct PullRequest {
     pub(crate) number: u32,
     pub(crate) title: String,
