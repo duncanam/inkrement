@@ -5,6 +5,7 @@ mod cli;
 mod diff_parse;
 mod fetch_files;
 mod pull_changes;
+mod review_data;
 
 fn main() -> Result<()> {
     cli::Cli::parse().run()

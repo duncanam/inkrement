@@ -92,11 +92,11 @@ struct GitHubUser {
 /// payload delivered by Github and requires parsing
 #[derive(Debug)]
 pub(crate) struct PullRequest {
-    number: u32,
-    title: String,
+    pub(crate) number: u32,
+    pub(crate) title: String,
     pub(crate) repo_name: String,
     url: String,
-    author: String,
+    pub(crate) author: String,
     head_ref_name: String,
     pub(crate) head_ref_oid: String,
     base_ref_name: String,
