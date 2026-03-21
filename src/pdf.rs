@@ -1,14 +1,15 @@
-use color_eyre::eyre::{Result, eyre};
+use std::path::Path;
+
+use color_eyre::eyre::{Context, Result, eyre};
 use typst::{
-    Library, LibraryExt,
-    compile,
+    Library, LibraryExt, compile,
     diag::{FileError, FileResult},
     foundations::{Bytes, Datetime},
     syntax::{FileId, Source, VirtualPath},
     text::{Font, FontBook},
     utils::LazyHash,
 };
-use typst_pdf::{PdfOptions, pdf};
+use typst_pdf::PdfOptions;
 
 use crate::review_data::ReviewData;
 
@@ -106,15 +107,17 @@ impl typst::World for InkrementWorld {
     }
 }
 
-/// Render review data to a PDF
-pub(crate) fn render(review_data: &ReviewData) -> Result<Vec<u8>> {
-    let world = InkrementWorld::new(review_data)?;
+/// A rendered PDF
+pub(crate) struct Pdf(Vec<u8>);
 
-    let warned = compile::<typst::layout::PagedDocument>(&world);
+impl Pdf {
+    /// Render review data to a PDF
+    pub(crate) fn render(review_data: &ReviewData) -> Result<Self> {
+        let world = InkrementWorld::new(review_data)?;
 
-    let document = warned
-        .output
-        .map_err(|diagnostics| {
+        let warned = compile::<typst::layout::PagedDocument>(&world);
+
+        let document = warned.output.map_err(|diagnostics| {
             let messages: Vec<String> = diagnostics
                 .iter()
                 .map(|d| format!("{} (hint: {:?})", d.message, d.hints))
@@ -122,14 +125,20 @@ pub(crate) fn render(review_data: &ReviewData) -> Result<Vec<u8>> {
             eyre!("typst compilation failed:\n{}", messages.join("\n"))
         })?;
 
-    let options = PdfOptions::default();
+        let options = PdfOptions::default();
 
-    pdf(&document, &options)
-        .map_err(|diagnostics| {
-            let messages: Vec<String> = diagnostics
-                .iter()
-                .map(|d| d.message.to_string())
-                .collect();
+        let pdf = typst_pdf::pdf(&document, &options).map_err(|diagnostics| {
+            let messages: Vec<String> = diagnostics.iter().map(|d| d.message.to_string()).collect();
             eyre!("PDF generation failed:\n{}", messages.join("\n"))
-        })
+        })?;
+
+        Ok(Self(pdf))
+    }
+
+    /// Write the PDF to a file in the given directory
+    pub(crate) fn write(&self, output_dir: &Path, filename: &str) -> Result<()> {
+        let path = output_dir.join(filename);
+        std::fs::write(&path, &self.0)
+            .wrap_err_with(|| format!("failed to write {}", path.display()))
+    }
 }

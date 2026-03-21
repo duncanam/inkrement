@@ -102,6 +102,11 @@ pub(crate) struct PullRequest {
 }
 
 impl PullRequest {
+    /// Generate a PDF filename for this PR
+    pub(crate) fn pdf_filename(&self) -> String {
+        format!("{}-{}.pdf", self.number, self.repo_name.replace('/', "-"))
+    }
+
     /// Fetch the git diff for a specific pull request
     pub(crate) fn fetch_diff(&self) -> Result<String> {
         let output = Command::new("gh")

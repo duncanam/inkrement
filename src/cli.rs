@@ -3,7 +3,11 @@ use std::{fs, path::PathBuf};
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Context, Result};
 
-use crate::{pdf, pull_changes::PullRequests, review_data::ReviewData};
+use crate::{
+    pdf::{self, Pdf},
+    pull_changes::PullRequests,
+    review_data::ReviewData,
+};
 
 #[derive(Parser)]
 #[command(
@@ -55,24 +59,20 @@ impl Cli {
             Command::Sync => {
                 todo!("implement sync")
             }
-            Command::Generate { output } => {
+            Command::Generate { output: output_dir } => {
                 let prs = PullRequests::fetch()?;
 
-                fs::create_dir_all(&output)
-                    .wrap_err("failed to create output directory")?;
+                fs::create_dir_all(&output_dir).wrap_err("failed to create output directory")?;
 
                 for pr in prs.pull_requests.into_vec() {
                     let patch = pr.parse_diff()?;
                     let source_files = pr.fetch_source_files(&patch)?;
                     let review_data = ReviewData::build(&pr, &prs.reviewer, &patch, &source_files);
-                    let pdf_bytes = pdf::render(&review_data)?;
+                    let pdf = Pdf::render(&review_data)?;
+                    let filename = pr.pdf_filename();
+                    pdf.write(&output_dir, &filename)?;
 
-                    let filename = format!("{}-{}.pdf", pr.number, pr.repo_name.replace('/', "-"));
-                    let path = output.join(&filename);
-                    fs::write(&path, &pdf_bytes)
-                        .wrap_err_with(|| format!("failed to write {}", path.display()))?;
-
-                    println!("Generated: {}", path.display());
+                    println!("Generated: {}", output_dir.join(&filename).display());
                 }
 
                 Ok(())
