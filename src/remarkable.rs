@@ -44,12 +44,12 @@ enum FileType {
 /// A document or folder on the reMarkable
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-struct Document {
+pub(crate) struct Document {
     #[serde(rename = "ID")]
     id: DocumentId,
     #[serde(rename = "Type")]
     entry_type: EntryType,
-    visible_name: String,
+    pub(crate) visible_name: String,
     parent: DocumentId,
     #[serde(default, rename = "fileType")]
     file_type: Option<FileType>,
@@ -71,11 +71,11 @@ impl Document {
 }
 
 /// Client for the reMarkable USB web interface
-struct RemarkableClient(Client);
+pub(crate) struct RemarkableClient(Client);
 
 impl RemarkableClient {
     /// Create a new client, verifying the reMarkable is reachable
-    fn connect() -> Result<Self> {
+    pub(crate) fn connect() -> Result<Self> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
@@ -106,8 +106,8 @@ impl RemarkableClient {
             .wrap_err("failed to parse document listing from reMarkable")
     }
 
-    /// Fetch all inkcrement_documents on the reMarkable, recursing into all folders
-    fn list_all_inkcrement_documents(&self) -> Result<Box<[Document]>> {
+    /// Fetch all inkrement documents on the reMarkable, recursing into all folders
+    pub(crate) fn list_inkrement_documents(&self) -> Result<Box<[Document]>> {
         // Prefer manual stack management over recursion
         let mut all = Vec::new();
         let mut stack = vec![DocumentId::root()];
@@ -129,7 +129,7 @@ impl RemarkableClient {
     }
 
     /// Upload a PDF to the reMarkable (lands in root)
-    fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
+    pub(crate) fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
         let part = Part::bytes(pdf.as_bytes().to_vec())
             .file_name(filename.to_string())
             .mime_str("application/pdf")
