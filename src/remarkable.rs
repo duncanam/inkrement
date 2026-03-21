@@ -1,5 +1,8 @@
 use color_eyre::eyre::{Context, Result, eyre};
-use reqwest::blocking::Client;
+use reqwest::blocking::{
+    Client,
+    multipart::{Form, Part},
+};
 use serde::Deserialize;
 
 use crate::{pdf::Pdf, pull_changes::INKREMENT_TAG};
@@ -127,13 +130,12 @@ impl RemarkableClient {
 
     /// Upload a PDF to the reMarkable (lands in root)
     fn upload(&self, filename: &str, pdf: &Pdf) -> Result<()> {
-        let form = reqwest::blocking::multipart::Form::new().part(
-            "file",
-            reqwest::blocking::multipart::Part::bytes(pdf.as_bytes().to_vec())
-                .file_name(filename.to_string())
-                .mime_str("application/pdf")
-                .wrap_err("failed to set MIME type")?,
-        );
+        let part = Part::bytes(pdf.as_bytes().to_vec())
+            .file_name(filename.to_string())
+            .mime_str("application/pdf")
+            .wrap_err("failed to set MIME type")?;
+
+        let form = Form::new().part("file", part);
 
         let response = self
             .0
