@@ -1,5 +1,5 @@
 use serde::Serialize;
-use unidiff::PatchSet;
+use unidiff::{Hunk, Line, PatchSet, PatchedFile};
 
 use crate::{fetch_files::SourceFiles, pull_changes::PullRequest};
 
@@ -78,87 +78,91 @@ fn lang_from_path(path: &str) -> String {
         .to_string()
 }
 
+impl From<&Line> for LineData {
+    fn from(line: &Line) -> Self {
+        let kind = if line.is_added() {
+            "added"
+        } else if line.is_removed() {
+            "removed"
+        } else {
+            "context"
+        }
+        .to_string();
+
+        Self {
+            kind,
+            content: line.value.clone(),
+            old_line_no: line.source_line_no,
+            new_line_no: line.target_line_no,
+        }
+    }
+}
+
+impl HunkData {
+    fn new(id: usize, hunk: &Hunk) -> Self {
+        let lines = hunk.lines().iter().map(LineData::from).collect();
+        Self { id, lines }
+    }
+}
+
+impl FileData {
+    fn new(idx: usize, file: &PatchedFile, source_files: &SourceFiles) -> Self {
+        let path = file.path();
+        let lang = lang_from_path(&path);
+
+        let old_source = source_files
+            .old
+            .iter()
+            .find(|sf| sf.path == path)
+            .map(|sf| sf.content.clone());
+
+        let new_source = source_files
+            .new
+            .iter()
+            .find(|sf| sf.path == path)
+            .map(|sf| sf.content.clone());
+
+        let old_source_label = old_source.as_ref().map(|_| format!("source-old-{idx}"));
+        let new_source_label = new_source.as_ref().map(|_| format!("source-new-{idx}"));
+
+        let hunks = file
+            .hunks()
+            .into_iter()
+            .enumerate()
+            .map(|(hunk_idx, hunk)| HunkData::new(hunk_idx + 1, hunk))
+            .collect();
+
+        Self {
+            path,
+            lang,
+            hunks,
+            old_source,
+            new_source,
+            old_source_label,
+            new_source_label,
+        }
+    }
+}
+
 impl ReviewData {
     /// Build review data from a pull request, its parsed diff, source files, and reviewer name
     pub(crate) fn build(
         pr: PullRequest,
         reviewer: &str,
         patch: &PatchSet,
-        source_files: &SourceFiles,
+        source_files: SourceFiles,
     ) -> Self {
-        let files = patch
-            .files()
-            .iter()
-            .enumerate()
-            .map(|(file_idx, file)| {
-                let path = file.path();
-                let lang = lang_from_path(&path);
-
-                let old_source = source_files
-                    .old
-                    .iter()
-                    .find(|sf| sf.path == path)
-                    .map(|sf| sf.content.clone());
-
-                let new_source = source_files
-                    .new
-                    .iter()
-                    .find(|sf| sf.path == path)
-                    .map(|sf| sf.content.clone());
-
-                let old_source_label = old_source
-                    .as_ref()
-                    .map(|_| format!("source-old-{file_idx}"));
-
-                let new_source_label = new_source
-                    .as_ref()
-                    .map(|_| format!("source-new-{file_idx}"));
-
-                let hunks = file
-                    .hunks()
-                    .iter()
-                    .enumerate()
-                    .map(|(hunk_idx, hunk)| {
-                        let lines = hunk
-                            .lines()
-                            .iter()
-                            .map(|line| LineData {
-                                kind: if line.is_added() {
-                                    "added".to_string()
-                                } else if line.is_removed() {
-                                    "removed".to_string()
-                                } else {
-                                    "context".to_string()
-                                },
-                                content: line.value.clone(),
-                                old_line_no: line.source_line_no,
-                                new_line_no: line.target_line_no,
-                            })
-                            .collect();
-
-                        HunkData {
-                            id: hunk_idx + 1,
-                            lines,
-                        }
-                    })
-                    .collect();
-
-                FileData {
-                    path,
-                    lang,
-                    hunks,
-                    old_source,
-                    new_source,
-                    old_source_label,
-                    new_source_label,
-                }
-            })
-            .collect();
-
         let lines_added = patch.files().iter().map(|f| f.added()).sum();
         let lines_removed = patch.files().iter().map(|f| f.removed()).sum();
 
-        ReviewData {
+        let files = patch
+            .files()
+            .into_iter()
+            .enumerate()
+            .map(|(idx, file)| FileData::new(idx, file, &source_files))
+            .collect();
+
+        Self {
             title: pr.title,
             repo: pr.repo_name,
             number: pr.number,
