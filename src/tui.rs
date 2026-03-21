@@ -1,10 +1,18 @@
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::Duration,
+};
 
 use color_eyre::eyre::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
 
-use crate::pull_changes::{PullRequest, PullRequests};
+use crate::{
+    pull_changes::{PullRequest, PullRequests},
+    remarkable::RemarkableClient,
+};
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -110,15 +118,24 @@ impl RemarkableStatus {
     /// Render as a styled span for the header bar.
     fn to_span(self) -> Span<'static> {
         match self {
-            Self::Connected => Span::styled("● reMarkable connected", Style::default().fg(Color::Green)),
-            Self::Disconnected => Span::styled("○ reMarkable disconnected", Style::default().fg(Color::DarkGray)),
+            Self::Connected => {
+                Span::styled("● reMarkable connected", Style::default().fg(Color::Green))
+            }
+            Self::Disconnected => Span::styled(
+                "○ reMarkable disconnected",
+                Style::default().fg(Color::DarkGray),
+            ),
         }
     }
 }
 
 impl From<bool> for RemarkableStatus {
     fn from(connected: bool) -> Self {
-        if connected { Self::Connected } else { Self::Disconnected }
+        if connected {
+            Self::Connected
+        } else {
+            Self::Disconnected
+        }
     }
 }
 
@@ -198,6 +215,16 @@ impl PrRow {
     }
 }
 
+/// Messages sent from background loading threads to the TUI event loop.
+enum LoadingMessage {
+    /// A status update to display while loading (e.g. "Fetching PRs from GitHub...").
+    Status(String),
+    /// GitHub PR data has been fetched (or failed).
+    PrsLoaded(Result<PullRequests>),
+    /// reMarkable connection + document listing result.
+    RemarkableLoaded(Result<(RemarkableStatus, Vec<String>)>),
+}
+
 /// Tracks the state of an ongoing background operation (render + upload).
 ///
 /// Displayed as a status message and progress bar at the bottom of the TUI.
@@ -224,6 +251,12 @@ pub(crate) struct App {
     table_state: TableState,
     /// Whether the reMarkable is reachable via USB.
     remarkable_status: RemarkableStatus,
+    /// Filenames of inkrement docs already on the reMarkable.
+    existing_filenames: HashSet<String>,
+    /// Receiver for messages from background loading threads.
+    loading_rx: Receiver<LoadingMessage>,
+    /// Status message shown during loading.
+    loading_message: Option<String>,
     /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
     /// Set to true when the user presses 'q' to exit.
@@ -231,34 +264,46 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Create a new app from fetched GitHub PRs and reMarkable document names.
+    /// Create a new app and spawn background threads to load data.
     ///
-    /// `existing_filenames` contains the `visible_name` of all inkrement documents
-    /// already on the reMarkable, used to mark PRs as already uploaded.
-    /// Create a new app from fetched GitHub PRs and reMarkable state.
-    ///
-    /// `existing_filenames` contains the `visible_name` of all inkrement documents
-    /// already on the reMarkable, used to mark PRs as already uploaded.
-    /// `remarkable_connected` indicates whether the reMarkable was reachable at startup.
-    pub(crate) fn new(
-        pull_requests: &PullRequests,
-        existing_filenames: HashSet<String>,
-        remarkable_status: RemarkableStatus,
-    ) -> Self {
-        let prs = pull_requests
-            .pull_requests
-            .iter()
-            .map(|pr| PrRow::from_pr(pr, &existing_filenames))
-            .collect();
+    /// The TUI launches immediately with a loading spinner. GitHub PRs and
+    /// reMarkable connection status are fetched in background threads and
+    /// arrive via channel messages.
+    pub(crate) fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
 
-        let mut table_state = TableState::default();
-        table_state.select(Some(0));
+        // Spawn GitHub PR fetch
+        let tx_gh = tx.clone(); // Dev note: this increments reference count
+        thread::spawn(move || {
+            let _ = tx_gh.send(LoadingMessage::Status(
+                "Fetching PRs from GitHub...".to_string(),
+            ));
+            let _ = tx_gh.send(LoadingMessage::PrsLoaded(PullRequests::fetch()));
+        });
+
+        // Spawn reMarkable connection check
+        thread::spawn(move || {
+            let _ = tx.send(LoadingMessage::Status(
+                "Connecting to reMarkable...".to_string(),
+            ));
+            let result = RemarkableClient::connect().and_then(|rm| {
+                let docs = rm.list_inkrement_documents()?;
+                let names = docs.into_iter().map(|d| d.visible_name).collect();
+                Ok((RemarkableStatus::Connected, names))
+            });
+            let _ = tx.send(LoadingMessage::RemarkableLoaded(
+                result.or_else(|_| Ok((RemarkableStatus::Disconnected, Vec::new()))),
+            ));
+        });
 
         Self {
             tab: Tab::GetPrs,
-            prs,
-            table_state,
-            remarkable_status,
+            prs: Vec::new(),
+            table_state: TableState::default(),
+            remarkable_status: RemarkableStatus::Disconnected,
+            existing_filenames: HashSet::new(),
+            loading_rx: rx,
+            loading_message: Some("Starting up...".to_string()),
             progress: None,
             should_quit: false,
         }
@@ -266,23 +311,93 @@ impl App {
 
     /// Run the TUI event loop.
     ///
-    /// Alternates between rendering a frame and blocking on user input.
-    /// Returns when the user presses 'q' or an error occurs.
+    /// Uses polling to handle both keyboard input and background thread messages.
+    /// Renders at ~30fps when idle, immediately on any event.
     pub(crate) fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         while !self.should_quit {
             terminal
                 .draw(|frame| self.render(frame))
                 .wrap_err("failed to draw frame")?;
+            self.process_loading_messages();
             self.handle_events()
                 .wrap_err("while drawing TUI, failed to handle events")?;
         }
         Ok(())
     }
 
+    // === Background message processing ===
+
+    /// Drain all pending messages from background loading threads.
+    fn process_loading_messages(&mut self) {
+        while let Ok(msg) = self.loading_rx.try_recv() {
+            match msg {
+                LoadingMessage::Status(message) => {
+                    self.loading_message = Some(message);
+                }
+                LoadingMessage::PrsLoaded(result) => {
+                    match result {
+                        Ok(pull_requests) => {
+                            self.prs = pull_requests
+                                .pull_requests
+                                .iter()
+                                .map(|pr| PrRow::from_pr(pr, &self.existing_filenames))
+                                .collect();
+                            if !self.prs.is_empty() {
+                                self.table_state.select(Some(0));
+                            }
+                        }
+                        Err(e) => {
+                            self.loading_message = Some(format!("Failed to load PRs: {e}"));
+                        }
+                    }
+                    self.check_loading_complete();
+                }
+                LoadingMessage::RemarkableLoaded(result) => {
+                    match result {
+                        Ok((status, filenames)) => {
+                            self.remarkable_status = status;
+                            self.existing_filenames = filenames.into_iter().collect();
+                            // Re-check uploaded status for any already-loaded PRs
+                            for pr in &mut self.prs {
+                                if self.existing_filenames.contains(&format!(
+                                    "#{} {} [{}] {}.pdf",
+                                    pr.number,
+                                    pr.repo.replace('/', "-"),
+                                    pr.short_sha,
+                                    crate::pull_changes::INKREMENT_TAG,
+                                )) {
+                                    pr.status = PrStatus::Uploaded;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.loading_message =
+                                Some(format!("reMarkable connection failed: {e}"));
+                        }
+                    }
+                    self.check_loading_complete();
+                }
+            }
+        }
+    }
+
+    /// Clear the loading message if all background tasks have completed.
+    fn check_loading_complete(&mut self) {
+        // If the channel is disconnected (all senders dropped), loading is done
+        if self.loading_rx.try_recv().is_err() {
+            self.loading_message = None;
+        }
+    }
+
     // === Event handling ===
 
-    /// Read and dispatch a single terminal event.
+    /// Poll for a terminal event with a short timeout to keep the UI responsive.
     fn handle_events(&mut self) -> Result<()> {
+        // Short poll timeout so we can process loading messages frequently
+        if !event::poll(Duration::from_millis(33)).wrap_err("failed to poll events")? {
+            return Ok(());
+        }
+
         let Event::Key(key) = event::read().wrap_err("while drawing TUI, failed to read event")?
         else {
             return Ok(());
@@ -498,37 +613,51 @@ impl App {
         frame.render_widget(footer, area);
     }
 
-    /// Render the progress bar and status message at the very bottom.
+    /// Render the progress/loading area at the very bottom.
     ///
-    /// Only visible when a background operation is in progress.
-    /// Shows a human-readable status line and a gauge bar with step count.
+    /// Shows either:
+    /// - A loading spinner message during startup
+    /// - A progress bar during upload operations
+    /// - Nothing when idle
     fn render_progress(&self, frame: &mut Frame, area: Rect) {
-        match &self.progress {
-            Some(progress) => {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints(PROGRESS_LAYOUT)
-                    .split(area);
+        // Loading message takes priority (startup)
+        if let Some(message) = &self.loading_message {
+            let spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let tick = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() / 80)
+                .unwrap_or(0)
+                % spinner.len() as u128) as usize;
 
-                let status = Paragraph::new(format!("  {}", progress.message))
-                    .style(Style::default().fg(Color::Cyan));
-                frame.render_widget(status, chunks[0]);
+            let line = Line::from(vec![
+                Span::styled(spinner[tick], Style::default().fg(Color::Cyan)),
+                Span::raw(format!(" {message}")),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
 
-                let ratio = if progress.total > 0 {
-                    progress.current as f64 / progress.total as f64
-                } else {
-                    0.0
-                };
-                let gauge = Gauge::default()
-                    .gauge_style(Style::default().fg(Color::Cyan))
-                    .ratio(ratio)
-                    .label(format!("{}/{} steps", progress.current, progress.total));
-                frame.render_widget(gauge, chunks[1]);
-            }
-            None => {
-                let empty = Paragraph::new("");
-                frame.render_widget(empty, area);
-            }
+        // Progress bar during operations
+        if let Some(progress) = &self.progress {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints(PROGRESS_LAYOUT)
+                .split(area);
+
+            let status = Paragraph::new(format!("  {}", progress.message))
+                .style(Style::default().fg(Color::Cyan));
+            frame.render_widget(status, chunks[0]);
+
+            let ratio = if progress.total > 0 {
+                progress.current as f64 / progress.total as f64
+            } else {
+                0.0
+            };
+            let gauge = Gauge::default()
+                .gauge_style(Style::default().fg(Color::Cyan))
+                .ratio(ratio)
+                .label(format!("{}/{} steps", progress.current, progress.total));
+            frame.render_widget(gauge, chunks[1]);
         }
     }
 }
