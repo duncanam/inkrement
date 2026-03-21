@@ -53,7 +53,9 @@ impl PullRequest {
             .iter()
             .filter(|file| !file.is_added_file())
             .map(|file| -> Result<SourceFile> {
-                let path = file.source_file.strip_prefix("a/")
+                let path = file
+                    .source_file
+                    .strip_prefix("a/")
                     .unwrap_or(&file.source_file)
                     .to_string();
 
@@ -69,7 +71,9 @@ impl PullRequest {
             .iter()
             .filter(|file| !file.is_removed_file())
             .map(|file| -> Result<SourceFile> {
-                let path = file.target_file.strip_prefix("b/")
+                let path = file
+                    .target_file
+                    .strip_prefix("b/")
                     .unwrap_or(&file.target_file)
                     .to_string();
 

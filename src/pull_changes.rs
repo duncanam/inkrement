@@ -4,6 +4,8 @@ use color_eyre::eyre::{Context, Result, eyre};
 use itertools::Itertools;
 use serde::Deserialize;
 
+use crate::{pdf::Pdf, review_data::ReviewData};
+
 /// Represents all pull requests found by the PR search JSON output
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
@@ -14,10 +16,7 @@ impl SearchResponse {
     /// Search for the user's PRs
     fn fetch() -> Result<Self> {
         let output = Command::new("gh")
-            .args([
-                "api",
-                "search/issues?q=is:pr+is:open+review-requested:@me",
-            ])
+            .args(["api", "search/issues?q=is:pr+is:open+review-requested:@me"])
             .output()
             .wrap_err("failed to run gh CLI")?;
 
@@ -130,6 +129,14 @@ impl PullRequest {
         }
 
         String::from_utf8(output.stdout).wrap_err("gh pr diff returned invalid UTF-8")
+    }
+
+    /// Render the PR to a PDF
+    pub(crate) fn render_to_pdf(&self, reviewer: &str) -> Result<Pdf> {
+        let patch = self.parse_diff()?;
+        let source_files = self.fetch_source_files(&patch)?;
+        let review_data = ReviewData::build(self, reviewer, &patch, &source_files);
+        Pdf::render(&review_data)
     }
 }
 

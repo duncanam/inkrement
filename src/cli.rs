@@ -65,12 +65,19 @@ impl Cli {
                 fs::create_dir_all(&output_dir).wrap_err("failed to create output directory")?;
 
                 for pr in prs.pull_requests.into_vec() {
-                    let patch = pr.parse_diff()?;
-                    let source_files = pr.fetch_source_files(&patch)?;
-                    let review_data = ReviewData::build(&pr, &prs.reviewer, &patch, &source_files);
-                    let pdf = Pdf::render(&review_data)?;
+                    let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
+                        format!(
+                            "failed to PDF-render {}#{} \"{}\"",
+                            pr.repo_name, pr.number, pr.title
+                        )
+                    })?;
                     let filename = pr.pdf_filename();
-                    pdf.write(&output_dir, &filename)?;
+                    pdf.write(&output_dir, &filename).wrap_err_with(|| {
+                        format!(
+                            "failed to write PDF to file for {}#{} \"{}\"",
+                            pr.repo_name, pr.number, pr.title
+                        )
+                    })?;
 
                     println!("Generated: {}", output_dir.join(&filename).display());
                 }
