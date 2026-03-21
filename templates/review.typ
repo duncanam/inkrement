@@ -12,6 +12,9 @@
 #show raw: set text(font: "JetBrains Mono", size: 8pt)
 #set par(leading: 0.5em)
 
+// Make headings invisible - they only exist for PDF bookmark navigation
+#show heading: it => none
+
 // Load review data from JSON (served by the Rust World impl)
 #let data = json("review-data.json")
 
@@ -24,15 +27,13 @@
 #let added-bg = rgb("#e6ffe6")
 #let removed-bg = rgb("#ffe6e6")
 
-// Helper: render a diff code block with syntax highlighting, line numbers, and bars
-#let diff-code-block(lines, lang, side, filter, bar-color) = {
-  let filtered = lines.filter(l => l.kind in filter)
-  if filtered.len() == 0 { return }
-  let code-text = filtered.map(l => l.content).join("\n")
-  let kinds = filtered.map(l => l.kind)
-  let line-nos = filtered.map(l => {
-    if side == "old" { l.old_line_no } else { l.new_line_no }
-  })
+// Shared code block renderer.
+// - `code-text`: the joined source string
+// - `lang`: language for syntax highlighting
+// - `line-nos`: array of line numbers (int or none) parallel to raw lines
+// - `kinds`: array of "added"/"removed"/"context" parallel to raw lines (or none for plain)
+// - `bar-color`: color for the margin bar on changed lines (or none)
+#let code-block(code-text, lang, line-nos, kinds: none, bar-color: none) = {
   let effective-lang = if lang != "" { lang } else { "txt" }
 
   block(
@@ -41,28 +42,32 @@
     stroke: 0.5pt + light-gray,
     radius: 2pt,
   )[
+    #set par(leading: 0em)
     #show raw.line: it => {
       let idx = it.number - 1
-      let kind = kinds.at(idx, default: "context")
       let no = line-nos.at(idx, default: none)
+      let kind = if kinds != none { kinds.at(idx, default: "context") } else { "context" }
       let bg = if kind == "added" { added-bg } else if kind == "removed" { removed-bg } else { none }
+      let bar = if kind != "context" and bar-color != none {
+        box(width: 3pt, height: 8pt, fill: bar-color)
+        h(4pt)
+      } else {
+        h(if bar-color != none { 7pt } else { 0pt })
+      }
+
       box(
         width: 100%,
         fill: bg,
-        inset: (x: 2pt, y: 0.5pt),
+        inset: (x: 4pt, y: 2pt),
+        outset: (y: 1pt),
       )[
         #grid(
-          columns: (24pt, auto, 1fr),
+          columns: if bar-color != none { (24pt, auto, 1fr) } else { (28pt, 1fr) },
           align: horizon,
           text(size: 7pt, fill: gray)[
             #if no != none [#str(no)]
           ],
-          if kind != "context" [
-            #box(width: 3pt, height: 8pt, fill: bar-color)
-            #h(4pt)
-          ] else [
-            #h(7pt)
-          ],
+          ..if bar-color != none { (bar,) },
           it,
         )
       ]
@@ -71,10 +76,31 @@
   ]
 }
 
+// Diff code block: filters lines by kind, extracts metadata, delegates to code-block
+#let diff-code-block(lines, lang, side, filter, bar-color) = {
+  let filtered = lines.filter(l => l.kind in filter)
+  if filtered.len() == 0 { return }
+  let code-text = filtered.map(l => l.content).join("\n")
+  let kinds = filtered.map(l => l.kind)
+  let line-nos = filtered.map(l => {
+    if side == "old" { l.old_line_no } else { l.new_line_no }
+  })
+  code-block(code-text, lang, line-nos, kinds: kinds, bar-color: bar-color)
+}
+
+// Source code block: plain display with line numbers, no diff coloring
+#let source-code-block(source, lang) = {
+  // Build line numbers 1..N
+  let n = source.split("\n").len()
+  let line-nos = range(1, n + 1)
+  code-block(source, lang, line-nos)
+}
+
 // ============================================================================
 // Title page
 // ============================================================================
 #page[
+  == Review
   #v(1.2in)
 
   #align(center)[
@@ -136,6 +162,7 @@
 // ============================================================================
 // Page 2: Files changed
 // ============================================================================
+== Files Changed
 #page[
   #text(size: 16pt, weight: "bold")[Files Changed]
   #v(0.1in)
@@ -149,11 +176,12 @@
 ]
 
 // ============================================================================
-// Diff pages — one page per hunk
+// Diff pages - one page per hunk
 // ============================================================================
 #for (file-idx, file) in data.files.enumerate() [
   #for (hunk-idx, hunk) in file.hunks.enumerate() [
     #page[
+      #if hunk-idx == 0 [= #file.path]
       #text(size: 10pt, weight: "bold")[#file.path] #label("file-" + str(file-idx) + "-" + str(hunk-idx))
       #h(1fr)
       #text(size: 9pt, fill: gray)[\[H#str(hunk.id)\]]
@@ -209,7 +237,7 @@
 ]
 
 // ============================================================================
-// Full source pages — old versions
+// Full source pages - old versions
 // ============================================================================
 #for (file-idx, file) in data.files.enumerate() [
   #if file.old_source != none [
@@ -219,13 +247,13 @@
       ] #label("source-old-" + str(file-idx))
       #line(length: 100%, stroke: 0.5pt + light-gray)
       #v(4pt)
-      #raw(file.old_source, lang: if file.lang != "" { file.lang } else { "txt" }, block: true)
+      #source-code-block(file.old_source, file.lang)
     ]
   ]
 ]
 
 // ============================================================================
-// Full source pages — new versions
+// Full source pages - new versions
 // ============================================================================
 #for (file-idx, file) in data.files.enumerate() [
   #if file.new_source != none [
@@ -235,7 +263,7 @@
       ] #label("source-new-" + str(file-idx))
       #line(length: 100%, stroke: 0.5pt + light-gray)
       #v(4pt)
-      #raw(file.new_source, lang: if file.lang != "" { file.lang } else { "txt" }, block: true)
+      #source-code-block(file.new_source, file.lang)
     ]
   ]
 ]
