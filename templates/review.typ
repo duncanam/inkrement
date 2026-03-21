@@ -5,7 +5,7 @@
 #set page(
   width: 8.3in,
   height: 11.1in,
-  margin: 1in,
+  margin: 0.7in,
 )
 
 #set text(font: "Inter", size: 9pt)
