@@ -6,6 +6,7 @@ mod diff_parse;
 mod fetch_files;
 mod pdf;
 mod pull_changes;
+mod remarkable;
 mod review_data;
 
 fn main() -> Result<()> {

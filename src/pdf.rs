@@ -141,6 +141,11 @@ impl Pdf {
         Ok(Self(pdf))
     }
 
+    /// Get the raw PDF bytes
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
     /// Write the PDF to a file in the given directory
     pub(crate) fn write(&self, output_dir: &Path, filename: &str) -> Result<()> {
         let path = output_dir.join(filename);

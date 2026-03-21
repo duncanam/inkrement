@@ -6,6 +6,9 @@ use serde::Deserialize;
 
 use crate::{pdf::Pdf, review_data::ReviewData};
 
+/// Tag embedded in PDF filenames to identify inkrement documents
+pub(crate) const INKREMENT_TAG: &str = "inkrement";
+
 /// Represents all pull requests found by the PR search JSON output
 #[derive(Debug, Deserialize)]
 struct SearchResponse {
@@ -105,10 +108,9 @@ impl PullRequest {
     pub(crate) fn pdf_filename(&self) -> String {
         let short_sha = &self.head_ref_oid[..8.min(self.head_ref_oid.len())];
         format!(
-            "#{} {} [{}] inkcremental.pdf",
+            "#{} {} [{short_sha}] {INKREMENT_TAG}.pdf",
             self.number,
             self.repo_name.replace('/', "-"),
-            short_sha,
         )
     }
 
