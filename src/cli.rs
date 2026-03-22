@@ -25,6 +25,7 @@ Workflow:
 Scripting:
   inkrement get        Non-interactive: fetch PRs and upload to reMarkable
   inkrement generate   Generate review PDFs locally for preview
+  inkrement download   Download annotated PDFs from reMarkable (stripped)
 
 Required CLI tools: gh, claude",
     version
@@ -44,6 +45,12 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
     },
+    /// Download annotated PDFs from reMarkable, strip source pages, and save locally
+    Download {
+        /// Output directory for downloaded PDFs
+        #[arg(short, long, default_value = ".")]
+        output: PathBuf,
+    },
 }
 
 impl Cli {
@@ -58,6 +65,7 @@ impl Cli {
             }
             Some(Command::Get) => commands::get_reviews_and_send_to_remarkable(),
             Some(Command::Generate { output }) => commands::generate_local_pdfs(&output),
+            Some(Command::Download { output }) => commands::download_annotated_pdfs(&output),
         }
     }
 }

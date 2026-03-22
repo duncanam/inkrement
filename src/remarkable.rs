@@ -11,7 +11,7 @@ const BASE_URL: &str = "http://10.11.99.1";
 
 /// A unique identifier for a document or folder on the reMarkable
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct DocumentId(String);
+pub(crate) struct DocumentId(pub(crate) String);
 
 impl DocumentId {
     /// The root folder (empty string parent)
@@ -46,7 +46,7 @@ enum FileType {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct Document {
     #[serde(rename = "ID")]
-    id: DocumentId,
+    pub(crate) id: DocumentId,
     #[serde(rename = "Type")]
     entry_type: EntryType,
     pub(crate) visible_name: String,
@@ -171,7 +171,7 @@ impl RemarkableClient {
     }
 
     /// Download an annotated PDF from the reMarkable
-    fn download(&self, doc_id: &DocumentId) -> Result<Vec<u8>> {
+    pub(crate) fn download(&self, doc_id: &DocumentId) -> Result<Vec<u8>> {
         let response = self
             .0
             .get(format!(

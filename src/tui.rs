@@ -11,8 +11,9 @@ use itertools::Itertools;
 
 use crate::{
     pdf::Pdf,
+    pdf_strip,
     pull_changes::{PullRequest, PullRequests},
-    remarkable::RemarkableClient,
+    remarkable::{DocumentId, RemarkableClient},
     review_data::ReviewData,
 };
 use ratatui::{
@@ -208,7 +209,7 @@ enum ReviewStatus {
 /// handwritten review annotations ready to be published.
 struct DocRow {
     /// The document's ID on the reMarkable (needed for download).
-    doc_id: String,
+    doc_id: DocumentId,
     /// PR number parsed from the filename.
     number: String,
     /// Repository name parsed from the filename.
@@ -222,7 +223,7 @@ struct DocRow {
 impl DocRow {
     /// Parse an inkrement filename into a DocRow.
     /// Expected format: "#72 Atomic-Industries-crab-rave [747e7fe8] inkrement.pdf"
-    fn from_remarkable(doc_id: String, name: &str) -> Self {
+    fn from_remarkable(doc_id: DocumentId, name: &str) -> Self {
         // Parse structured fields from the filename, fall back to raw name
         let (number, repo, short_sha) = Self::parse_filename(name)
             .unwrap_or_else(|| ("?".to_string(), name.to_string(), "?".to_string()));
@@ -270,7 +271,7 @@ enum BackgroundMessage {
     PrsLoaded(Result<PullRequests>),
     /// reMarkable connection + document listing result.
     /// Contains (status, vec of (doc_id, visible_name)).
-    RemarkableLoaded(Result<(RemarkableStatus, Vec<(String, String)>)>),
+    RemarkableLoaded(Result<(RemarkableStatus, Vec<(DocumentId, String)>)>),
     /// Upload progress update: (current_step, total_steps, message).
     UploadProgress(usize, usize, String),
     /// A single PR upload completed (index into prs vec).
@@ -422,8 +423,8 @@ impl App {
 
                             // Populate the Publish tab with docs from reMarkable
                             self.docs = doc_pairs
-                                .iter()
-                                .map(|(id, name)| DocRow::from_remarkable(id.clone(), name))
+                                .into_iter()
+                                .map(|(id, name)| DocRow::from_remarkable(id, &name))
                                 .collect();
                             if !self.docs.is_empty() {
                                 self.publish_table_state.select(Some(0));
@@ -598,10 +599,7 @@ impl App {
             ));
             let result = RemarkableClient::connect().and_then(|rm| {
                 let docs = rm.list_inkrement_documents()?;
-                let pairs = docs
-                    .into_iter()
-                    .map(|d| (d.id_str().to_string(), d.visible_name))
-                    .collect();
+                let pairs = docs.into_iter().map(|d| (d.id, d.visible_name)).collect();
                 Ok((RemarkableStatus::Connected, pairs))
             });
             let _ = tx_rm.send(BackgroundMessage::RemarkableLoaded(
@@ -615,8 +613,16 @@ impl App {
         self.tab = self.tab.next();
     }
 
-    /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
+    /// Execute the action for the current tab.
     fn execute(&mut self) {
+        match self.tab {
+            Tab::GetPrs => self.execute_get(),
+            Tab::PublishReviews => self.execute_publish(),
+        }
+    }
+
+    /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
+    fn execute_get(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
             self.loading_message = Some("reMarkable not connected".to_string());
             return;
@@ -733,6 +739,96 @@ impl App {
                     }
                 }
                 step += 1;
+            }
+
+            let _ = tx.send(BackgroundMessage::UploadComplete);
+        });
+    }
+
+    /// Download selected documents from reMarkable and prepare for review.
+    fn execute_publish(&mut self) {
+        if self.remarkable_status != RemarkableStatus::Connected {
+            self.loading_message = Some("reMarkable not connected".to_string());
+            return;
+        }
+
+        let queued: Vec<(DocumentId, String)> = self
+            .docs
+            .iter()
+            .filter(|doc| doc.status == ReviewStatus::Queued)
+            .map(|doc| {
+                let display = format!("{} {}", doc.number, doc.repo);
+                (doc.doc_id.clone(), display)
+            })
+            .collect();
+
+        if queued.is_empty() {
+            return;
+        }
+
+        let total_steps = queued.len();
+        let tx = self.bg_tx.clone();
+
+        thread::spawn(move || {
+            let rm = match RemarkableClient::connect() {
+                Ok(rm) => rm,
+                Err(e) => {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to connect to reMarkable: {e}"
+                    )));
+                    return;
+                }
+            };
+
+            for (step, (doc_id, name)) in queued.iter().enumerate() {
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Downloading {name}..."),
+                ));
+
+                let pdf_bytes = match rm.download(doc_id) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to download {name}: {e}"
+                        )));
+                        return;
+                    }
+                };
+
+                // Strip source reference pages from the annotated PDF
+                let stripped = match pdf_strip::strip_source_pages(&pdf_bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to strip source pages from {name}: {e}"
+                        )));
+                        return;
+                    }
+                };
+
+                // Save stripped PDF to temp dir for Claude processing
+                let tmp_dir = std::env::temp_dir().join("inkrement");
+                if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to create temp dir: {e}"
+                    )));
+                    return;
+                }
+
+                let filename = format!("{name}.pdf");
+                let path = tmp_dir.join(&filename);
+                if let Err(e) = std::fs::write(&path, &stripped) {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to save {}: {e}",
+                        path.display()
+                    )));
+                    return;
+                }
+
+                // TODO: Send stripped PDF to Claude for OCR interpretation
+                // TODO: Post review to GitHub
             }
 
             let _ = tx.send(BackgroundMessage::UploadComplete);

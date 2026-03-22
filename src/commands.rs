@@ -2,7 +2,7 @@ use std::{collections::HashSet, fs, path::Path};
 
 use color_eyre::eyre::{Context, Result};
 
-use crate::{pull_changes::PullRequests, remarkable::RemarkableClient};
+use crate::{pdf_strip, pull_changes::PullRequests, remarkable::RemarkableClient};
 
 /// Gets new pull request reviews from GitHub and uploads them to the reMarkable
 pub(crate) fn get_reviews_and_send_to_remarkable() -> Result<()> {
@@ -70,6 +70,42 @@ pub(crate) fn generate_local_pdfs(output_dir: &Path) -> Result<()> {
         })?;
 
         println!("Generated: {}", output_dir.join(&filename).display());
+    }
+
+    Ok(())
+}
+
+/// Download all inkrement documents from reMarkable, strip source pages, and save locally.
+pub(crate) fn download_annotated_pdfs(output_dir: &Path) -> Result<()> {
+    let remarkable = RemarkableClient::connect().wrap_err("could not connect to reMarkable")?;
+
+    let docs = remarkable
+        .list_inkrement_documents()
+        .wrap_err("could not list inkrement documents on reMarkable")?;
+
+    if docs.is_empty() {
+        println!("No inkrement documents found on reMarkable.");
+        return Ok(());
+    }
+
+    fs::create_dir_all(output_dir).wrap_err("failed to create output directory")?;
+
+    for doc in docs {
+        println!("Downloading {}...", doc.visible_name);
+        let pdf_bytes = remarkable
+            .download(&doc.id)
+            .wrap_err_with(|| format!("failed to download {}", doc.visible_name))?;
+
+        println!("Stripping source pages...");
+        let stripped = pdf_strip::strip_source_pages(&pdf_bytes)
+            .wrap_err_with(|| format!("failed to strip source pages from {}", doc.visible_name))?;
+
+        let filename = format!("{}.pdf", doc.visible_name);
+        let path = output_dir.join(&filename);
+        fs::write(&path, &stripped)
+            .wrap_err_with(|| format!("failed to write {}", path.display()))?;
+
+        println!("Saved: {}", path.display());
     }
 
     Ok(())
