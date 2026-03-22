@@ -243,11 +243,7 @@ impl DocRow {
         let (number, rest) = rest.split_once(' ')?;
         let (repo, rest) = rest.split_once(" [")?;
         let (sha, _) = rest.split_once(']')?;
-        Some((
-            format!("#{number}"),
-            repo.to_string(),
-            sha.to_string(),
-        ))
+        Some((format!("#{number}"), repo.to_string(), sha.to_string()))
     }
 
     /// Render this document as a table row.
@@ -335,43 +331,15 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Create a new app and spawn background threads to load data.
+    /// Create a new app and begin loading data in the background.
     ///
     /// The TUI launches immediately with a loading spinner. GitHub PRs and
     /// reMarkable connection status are fetched in background threads and
     /// arrive via channel messages.
     pub(crate) fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        let tx_gh = tx.clone();
-        let tx_rm = tx.clone();
 
-        // Spawn GitHub PR fetch
-        thread::spawn(move || {
-            let _ = tx_gh.send(BackgroundMessage::LoadingStatus(
-                "Fetching PRs from GitHub...".to_string(),
-            ));
-            let _ = tx_gh.send(BackgroundMessage::PrsLoaded(PullRequests::fetch()));
-        });
-
-        // Spawn reMarkable connection check
-        thread::spawn(move || {
-            let _ = tx_rm.send(BackgroundMessage::LoadingStatus(
-                "Connecting to reMarkable...".to_string(),
-            ));
-            let result = RemarkableClient::connect().and_then(|rm| {
-                let docs = rm.list_inkrement_documents()?;
-                let pairs = docs
-                    .into_iter()
-                    .map(|d| (d.id_str().to_string(), d.visible_name))
-                    .collect();
-                Ok((RemarkableStatus::Connected, pairs))
-            });
-            let _ = tx_rm.send(BackgroundMessage::RemarkableLoaded(
-                result.or_else(|_| Ok((RemarkableStatus::Disconnected, Vec::new()))),
-            ));
-        });
-
-        Self {
+        let mut app = Self {
             tab: Tab::GetPrs,
             prs: Vec::new(),
             pull_requests: None,
@@ -383,10 +351,13 @@ impl App {
             bg_tx: tx,
             bg_rx: rx,
             loading_message: Some("Starting up...".to_string()),
-            loading_pending: 2, // GitHub + reMarkable
+            loading_pending: 0,
             progress: None,
             should_quit: false,
-        }
+        };
+
+        app.refresh();
+        app
     }
 
     /// Run the TUI event loop.
@@ -446,10 +417,8 @@ impl App {
                     match result {
                         Ok((status, doc_pairs)) => {
                             self.remarkable_status = status;
-                            self.existing_filenames = doc_pairs
-                                .iter()
-                                .map(|(_, name)| name.clone())
-                                .collect();
+                            self.existing_filenames =
+                                doc_pairs.iter().map(|(_, name)| name.clone()).collect();
 
                             // Populate the Publish tab with docs from reMarkable
                             self.docs = doc_pairs
@@ -533,6 +502,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(-1),
             KeyCode::Char(' ') => self.toggle_selected(),
             KeyCode::Char('a') => self.select_all(),
+            KeyCode::Char('r') => self.refresh(),
             KeyCode::Tab => self.next_tab(),
             KeyCode::Enter => self.execute(),
             _ => {}
@@ -601,6 +571,43 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Spawn background threads to fetch data from GitHub and reMarkable.
+    /// Used on startup and when the user presses 'r'.
+    fn refresh(&mut self) {
+        if self.loading_pending > 0 {
+            return;
+        }
+
+        self.loading_message = Some("Refreshing...".to_string());
+        self.loading_pending = 2;
+
+        let tx_gh = self.bg_tx.clone();
+        thread::spawn(move || {
+            let _ = tx_gh.send(BackgroundMessage::LoadingStatus(
+                "Fetching PRs from GitHub...".to_string(),
+            ));
+            let _ = tx_gh.send(BackgroundMessage::PrsLoaded(PullRequests::fetch()));
+        });
+
+        let tx_rm = self.bg_tx.clone();
+        thread::spawn(move || {
+            let _ = tx_rm.send(BackgroundMessage::LoadingStatus(
+                "Connecting to reMarkable...".to_string(),
+            ));
+            let result = RemarkableClient::connect().and_then(|rm| {
+                let docs = rm.list_inkrement_documents()?;
+                let pairs = docs
+                    .into_iter()
+                    .map(|d| (d.id_str().to_string(), d.visible_name))
+                    .collect();
+                Ok((RemarkableStatus::Connected, pairs))
+            });
+            let _ = tx_rm.send(BackgroundMessage::RemarkableLoaded(
+                result.or_else(|_| Ok((RemarkableStatus::Disconnected, Vec::new()))),
+            ));
+        });
     }
 
     /// Cycle to the next tab.
@@ -842,8 +849,8 @@ impl App {
 
         // Scrollbar on the right edge of the table
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        let mut scrollbar_state =
-            ScrollbarState::new(self.prs.len()).position(self.get_table_state.selected().unwrap_or(0));
+        let mut scrollbar_state = ScrollbarState::new(self.prs.len())
+            .position(self.get_table_state.selected().unwrap_or(0));
         frame.render_stateful_widget(
             scrollbar,
             chunks[2].inner(ratatui::layout::Margin {
@@ -861,7 +868,7 @@ impl App {
             .constraints([
                 Constraint::Length(2), // title
                 Constraint::Length(1), // legend
-                Constraint::Min(3),   // table
+                Constraint::Min(3),    // table
             ])
             .split(area);
 
@@ -885,7 +892,7 @@ impl App {
             [
                 Constraint::Length(5),  // checkbox
                 Constraint::Length(6),  // number
-                Constraint::Min(20),   // repo
+                Constraint::Min(20),    // repo
                 Constraint::Length(10), // sha
             ],
         )
