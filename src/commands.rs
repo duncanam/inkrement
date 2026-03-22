@@ -4,7 +4,7 @@ use color_eyre::eyre::{Context, Result};
 
 use color_eyre::eyre::eyre;
 
-use crate::{pdf_strip, pull_changes::PullRequests, remarkable::RemarkableClient};
+use crate::{annotate, pdf_strip, pull_changes::{PullRequests, INKREMENT_TAG}, remarkable::RemarkableClient};
 
 /// Parse the OCR page count from an inkrement filename.
 /// Expected format: "#72 repo [sha] p42 inkrement.pdf" -> 42
@@ -134,6 +134,57 @@ pub(crate) fn download_annotated_pdfs(output_dir: &Path) -> Result<()> {
             .wrap_err_with(|| format!("failed to write {}", path.display()))?;
 
         println!("Saved: {}", path.display());
+    }
+
+    Ok(())
+}
+
+/// Interpret annotated PDFs in a directory via Claude OCR, saving JSON alongside each PDF.
+pub(crate) fn interpret_pdfs(input_dir: &Path) -> Result<()> {
+    let entries: Vec<_> = fs::read_dir(input_dir)
+        .wrap_err_with(|| format!("failed to read directory {}", input_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.contains(INKREMENT_TAG) && name.ends_with(".pdf")
+        })
+        .collect();
+
+    if entries.is_empty() {
+        println!(
+            "No inkrement PDFs found in {}",
+            input_dir.display()
+        );
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let pdf_path = entry.path();
+        let name = pdf_path.file_name().unwrap().to_string_lossy();
+
+        println!("Interpreting {name}...");
+        let review = annotate::interpret_pdf(&pdf_path)
+            .wrap_err_with(|| format!("failed to interpret {name}"))?;
+
+        if review.is_empty() {
+            println!("Skipping {name} (no annotations found)");
+            continue;
+        }
+
+        let json = serde_json::to_string_pretty(&review)
+            .wrap_err("failed to serialize interpretation to JSON")?;
+
+        let json_path = pdf_path.with_extension("json");
+        fs::write(&json_path, &json)
+            .wrap_err_with(|| format!("failed to write {}", json_path.display()))?;
+
+        println!(
+            "Saved: {} ({} annotations, decision: {:?})",
+            json_path.display(),
+            review.annotations.len(),
+            review.decision,
+        );
     }
 
     Ok(())

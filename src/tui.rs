@@ -811,6 +811,11 @@ impl App {
                 };
 
                 // Strip source reference pages from the annotated PDF
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Stripping source pages from {name} (this may take ~1min)..."),
+                ));
                 let stripped = match pdf_strip::strip_source_pages(&pdf_bytes, *ocr_pages) {
                     Ok(s) => s,
                     Err(e) => {

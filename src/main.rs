@@ -1,6 +1,7 @@
 use clap::Parser;
 use color_eyre::eyre::{Context, Result};
 
+mod annotate;
 mod cli;
 mod commands;
 mod diff_parse;

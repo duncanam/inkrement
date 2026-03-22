@@ -26,6 +26,7 @@ Scripting:
   inkrement get        Non-interactive: fetch PRs and upload to reMarkable
   inkrement generate   Generate review PDFs locally for preview
   inkrement download   Download annotated PDFs from reMarkable (stripped)
+  inkrement interpret  Run Claude OCR on stripped PDFs, output JSON
 
 Required CLI tools: gh, claude",
     version
@@ -51,6 +52,12 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         output: PathBuf,
     },
+    /// Interpret annotated PDFs via Claude OCR, saving JSON results alongside each PDF
+    Interpret {
+        /// Directory containing stripped PDF files to interpret
+        #[arg(short, long, default_value = ".")]
+        input: PathBuf,
+    },
 }
 
 impl Cli {
@@ -66,6 +73,7 @@ impl Cli {
             Some(Command::Get) => commands::get_reviews_and_send_to_remarkable(),
             Some(Command::Generate { output }) => commands::generate_local_pdfs(&output),
             Some(Command::Download { output }) => commands::download_annotated_pdfs(&output),
+            Some(Command::Interpret { input }) => commands::interpret_pdfs(&input),
         }
     }
 }
