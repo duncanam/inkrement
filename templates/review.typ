@@ -250,6 +250,7 @@
 // Separator page - marks the end of reviewable content
 // ============================================================================
 #page[
+  = Reference Source Code
   #v(1fr)
   #align(center)[
     #text(size: 24pt, weight: "bold", fill: gray)[REFERENCE SOURCE CODE]

@@ -4,7 +4,9 @@ use color_eyre::eyre::{Context, Result, eyre};
 use typst::{
     Library, LibraryExt, compile,
     diag::{FileError, FileResult},
-    foundations::{Bytes, Datetime},
+    foundations::{Bytes, Datetime, NativeElement, Selector},
+    layout::PagedDocument,
+    model::HeadingElem,
     syntax::{FileId, Source, VirtualPath},
     text::{Font, FontBook},
     utils::LazyHash,
@@ -142,13 +144,39 @@ impl Pdf {
             eyre!("PDF generation failed:\n{}", messages.join("\n"))
         })?;
 
-        // Calculate the number of review-only pages (before the source reference section).
-        let ocr_page_count = document.pages.len() - review_data.source_page_count();
+        // Find the separator page by querying the compiled document's headings.
+        // The "Reference Source Code" heading marks where source pages begin.
+        let ocr_page_count = Self::find_separator_page(&document)
+            .wrap_err("failed to determine where source pages begin")?;
 
         Ok(Self {
             bytes: pdf_bytes,
             ocr_page_count,
         })
+    }
+
+    /// Find the page number of the "Reference Source Code" separator heading.
+    /// Returns the number of pages before it (i.e. OCR-relevant page count).
+    fn find_separator_page(document: &PagedDocument) -> Result<usize> {
+        let selector = Selector::Elem(HeadingElem::ELEM, None);
+        let headings = document.introspector.query(&selector);
+
+        for heading in &headings {
+            // Check if this heading's body contains our separator text
+            let plain = heading.plain_text();
+            if plain.contains("Reference Source Code") {
+                let location = heading
+                    .location()
+                    .ok_or_else(|| eyre!("separator heading has no location"))?;
+                let page = document.introspector.page(location);
+                // page is 1-based; we want the count of pages before it
+                return Ok(page.get() - 1);
+            }
+        }
+
+        Err(eyre!(
+            "could not find 'Reference Source Code' heading in compiled document"
+        ))
     }
 
     /// Get the raw PDF bytes

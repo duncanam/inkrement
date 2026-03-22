@@ -83,14 +83,6 @@ impl<'a> ReviewData<'a> {
             files,
         }
     }
-
-    /// Number of source reference pages that will be generated.
-    /// Includes the separator page, plus one page per old/new source file.
-    pub(crate) fn source_page_count(&self) -> usize {
-        let old_count = self.files.iter().filter(|f| f.old_source.is_some()).count();
-        let new_count = self.files.iter().filter(|f| f.new_source.is_some()).count();
-        1 + old_count + new_count // 1 for the separator page
-    }
 }
 
 #[derive(Debug, Serialize)]
