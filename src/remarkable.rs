@@ -31,16 +31,6 @@ enum EntryType {
     DocumentType,
 }
 
-/// The file format of a document
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum FileType {
-    Pdf,
-    Epub,
-    #[serde(other)]
-    Unknown,
-}
-
 /// A document or folder on the reMarkable
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -50,23 +40,11 @@ pub(crate) struct Document {
     #[serde(rename = "Type")]
     entry_type: EntryType,
     pub(crate) visible_name: String,
-    parent: DocumentId,
-    #[serde(default, rename = "fileType")]
-    file_type: Option<FileType>,
 }
 
 impl Document {
     fn is_folder(&self) -> bool {
         self.entry_type == EntryType::CollectionType
-    }
-
-    fn is_document(&self) -> bool {
-        self.entry_type == EntryType::DocumentType
-    }
-
-    /// Get the document's unique ID as a string.
-    pub(crate) fn id_str(&self) -> &str {
-        self.id.as_str()
     }
 
     /// Check if this document was created by inkrement

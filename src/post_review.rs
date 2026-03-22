@@ -61,11 +61,9 @@ fn restore_repo_name(dashed: &str) -> Result<String> {
             .output();
 
         if let Ok(output) = output {
-            if output.status.success() {
-                let full_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !full_name.is_empty() {
-                    return Ok(full_name);
-                }
+            let full_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if output.status.success() && !full_name.is_empty() {
+                return Ok(full_name);
             }
         }
     }

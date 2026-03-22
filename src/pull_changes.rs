@@ -72,13 +72,10 @@ fn fetch_current_user() -> Result<String> {
 struct PullRequestResponse {
     number: u32,
     title: String,
-    url: String,
     author: GitHubUser,
     additions: usize,
     deletions: usize,
-    head_ref_name: String,
     head_ref_oid: String,
-    base_ref_name: String,
     base_ref_oid: String,
 }
 
@@ -98,13 +95,10 @@ pub(crate) struct PullRequest {
     pub(crate) number: u32,
     pub(crate) title: String,
     pub(crate) repo_name: String,
-    url: String,
     pub(crate) author: String,
     pub(crate) additions: usize,
     pub(crate) deletions: usize,
-    head_ref_name: String,
     pub(crate) head_ref_oid: String,
-    base_ref_name: String,
     pub(crate) base_ref_oid: String,
 }
 
@@ -177,7 +171,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
                 "--repo",
                 repo_name,
                 "--json",
-                "number,title,url,author,additions,deletions,headRefName,headRefOid,baseRefName,baseRefOid",
+                "number,title,author,additions,deletions,headRefOid,baseRefOid",
             ])
             .output()
             .wrap_err("failed to run gh CLI while fetching pull requests")?;
@@ -198,13 +192,10 @@ impl TryFrom<SearchPullRequest> for PullRequest {
             number: resp.number,
             title: resp.title,
             repo_name: repo_name.to_string(),
-            url: resp.url,
             author: resp.author.login,
             additions: resp.additions,
             deletions: resp.deletions,
-            head_ref_name: resp.head_ref_name,
             head_ref_oid: resp.head_ref_oid,
-            base_ref_name: resp.base_ref_name,
             base_ref_oid: resp.base_ref_oid,
         })
     }
@@ -291,13 +282,10 @@ mod tests {
         let json = r#"{
             "number": 42,
             "title": "Add widget endpoint",
-            "url": "https://github.com/acme/widgets/pull/42",
             "author": {"login": "jsmith"},
             "additions": 150,
             "deletions": 30,
-            "headRefName": "feature/widgets",
             "headRefOid": "abc123def456",
-            "baseRefName": "main",
             "baseRefOid": "789fed321cba"
         }"#;
 
@@ -307,9 +295,7 @@ mod tests {
         assert_eq!(resp.author.login, "jsmith");
         assert_eq!(resp.additions, 150);
         assert_eq!(resp.deletions, 30);
-        assert_eq!(resp.head_ref_name, "feature/widgets");
         assert_eq!(resp.head_ref_oid, "abc123def456");
-        assert_eq!(resp.base_ref_name, "main");
         assert_eq!(resp.base_ref_oid, "789fed321cba");
     }
 }

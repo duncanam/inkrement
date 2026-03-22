@@ -135,7 +135,7 @@ pub(crate) fn download_annotated_pdfs(output_dir: &Path) -> Result<()> {
             .wrap_err_with(|| format!("failed to strip source pages from {}", doc.visible_name))?;
 
         let filename = &doc.visible_name;
-        let path = output_dir.join(&filename);
+        let path = output_dir.join(filename);
         fs::write(&path, &stripped)
             .wrap_err_with(|| format!("failed to write {}", path.display()))?;
 
