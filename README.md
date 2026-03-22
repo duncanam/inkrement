@@ -32,7 +32,7 @@ cargo install --git https://github.com/duncanam/inkrement.git
 Once the tool matures we'll add GitHub actions to publish binaries.
 
 ### Use
-Connect your reMarkable via USB. Under Settings>Storage, ensure USB communication is enabled.
+Connect your reMarkable via USB. Under Settings > Storage, ensure USB communication is enabled.
 Then, run `inkrement` to launch the TUI.
 
 ## Keybindings
@@ -90,13 +90,27 @@ your handwriting.
 10. Inkrement will then take the resultant parsed handwriting and position data back from Claude and submit
 your PR review.
 
+## Roadmap and Outstanding Work
+Here are some things I'd like to fix:
+- [ ] overall tech debt and cleanup - I'd say maybe only 30-40% of the repo is idiomatic Rust that I've
+heavily combed through and corrected into proper Rusty patterns. The rest of the code is pathfinding
+"fast and loose" code to explore if stuff is possible.
+- [ ] modules are a mess right now and need restructuring. `tui.rs` is a great example.
+- [ ] only supports Claude as the OCR/contextualization backend. We should support more, including FOSS models.
+- [ ] only supports GitHub through `gh`. Not all users use GitHub as a service.
+- [ ] support iPads
+- [ ] PDF splitting step is horrendously slow, because `lopdf` needs to parse the PDF and re-render it
 
+## LLM and AI Policy
+LLMs have weaseled their ways into the workflow of many software engineers out there in order to maintain
+any semblance of competitiveness in today's world- it's unreasonable to outright ban all AI contribution.
+That said, here are some guidelines:
 
+- All lines of code must be accounted for
+- All lines of code must have human eyes on them
+- Architecture decisions should be signed off by a human
 
+Bonus points if you're still writing code the artisanal, old-fashioned way.
 
-
-
-
-
-
-
+## License
+GPLv3. Some dependents are not (`gh`, `claude`). Fonts include their licenses, see those.
