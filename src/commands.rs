@@ -2,7 +2,27 @@ use std::{collections::HashSet, fs, path::Path};
 
 use color_eyre::eyre::{Context, Result};
 
+use color_eyre::eyre::eyre;
+
 use crate::{pdf_strip, pull_changes::PullRequests, remarkable::RemarkableClient};
+
+/// Parse the OCR page count from an inkrement filename.
+/// Expected format: "#72 repo [sha] p42 inkrement.pdf" -> 42
+fn parse_ocr_pages_from_filename(name: &str) -> Result<usize> {
+    let after_bracket = name
+        .split("] ")
+        .nth(1)
+        .ok_or_else(|| eyre!("no ] delimiter"))?;
+    let pages_str = after_bracket
+        .split_once(' ')
+        .map(|(p, _)| p)
+        .ok_or_else(|| eyre!("no space after page count"))?;
+    pages_str
+        .strip_prefix('p')
+        .ok_or_else(|| eyre!("page count does not start with 'p'"))?
+        .parse()
+        .wrap_err("invalid page count number")
+}
 
 /// Gets new pull request reviews from GitHub and uploads them to the reMarkable
 pub(crate) fn get_reviews_and_send_to_remarkable() -> Result<()> {
@@ -19,14 +39,14 @@ pub(crate) fn get_reviews_and_send_to_remarkable() -> Result<()> {
         .collect();
 
     for pr in prs.pull_requests {
-        let filename = pr.pdf_filename();
+        let prefix = pr.filename_prefix();
 
-        if existing.contains(&filename) {
-            println!("Skipping {} (already on tablet)", filename);
+        if existing.iter().any(|f| f.starts_with(&prefix)) {
+            println!("Skipping {} (already on tablet)", prefix);
             continue;
         }
 
-        println!("Rendering {}...", filename);
+        println!("Rendering {}...", prefix);
         let pdf = pr.render_to_pdf(&prs.reviewer).wrap_err_with(|| {
             format!(
                 "while syncing, failed to render {}#{} \"{}\"",
@@ -34,6 +54,7 @@ pub(crate) fn get_reviews_and_send_to_remarkable() -> Result<()> {
             )
         })?;
 
+        let filename = pr.pdf_filename(pdf.ocr_page_count);
         println!("Uploading {}...", filename);
         remarkable.upload(&filename, &pdf).wrap_err_with(|| {
             format!(
@@ -61,7 +82,7 @@ pub(crate) fn generate_local_pdfs(output_dir: &Path) -> Result<()> {
                 pr.repo_name, pr.number, pr.title
             )
         })?;
-        let filename = pr.pdf_filename();
+        let filename = pr.pdf_filename(pdf.ocr_page_count);
         pdf.write(output_dir, &filename).wrap_err_with(|| {
             format!(
                 "failed to write PDF to file for {}#{} \"{}\"",
@@ -96,8 +117,15 @@ pub(crate) fn download_annotated_pdfs(output_dir: &Path) -> Result<()> {
             .download(&doc.id)
             .wrap_err_with(|| format!("failed to download {}", doc.visible_name))?;
 
-        println!("Stripping source pages...");
-        let stripped = pdf_strip::strip_source_pages(&pdf_bytes)
+        let ocr_pages = parse_ocr_pages_from_filename(&doc.visible_name).wrap_err_with(|| {
+            format!(
+                "could not determine OCR page count from filename: {}",
+                doc.visible_name
+            )
+        })?;
+
+        println!("Stripping source pages (keeping {ocr_pages} pages)...");
+        let stripped = pdf_strip::strip_source_pages(&pdf_bytes, ocr_pages)
             .wrap_err_with(|| format!("failed to strip source pages from {}", doc.visible_name))?;
 
         let filename = format!("{}.pdf", doc.visible_name);

@@ -109,13 +109,23 @@ pub(crate) struct PullRequest {
 }
 
 impl PullRequest {
-    /// Generate a PDF filename for this PR
-    pub(crate) fn pdf_filename(&self) -> String {
+    /// The filename prefix that identifies this PR (without the page count).
+    /// Used for duplicate detection - matches regardless of OCR page count.
+    pub(crate) fn filename_prefix(&self) -> String {
         let short_sha = &self.head_ref_oid[..8.min(self.head_ref_oid.len())];
         format!(
-            "#{} {} [{short_sha}] {INKREMENT_TAG}.pdf",
+            "#{} {} [{short_sha}]",
             self.number,
             self.repo_name.replace('/', "-"),
+        )
+    }
+
+    /// Generate a PDF filename for this PR.
+    /// `ocr_pages` is embedded in the filename so it survives the reMarkable round-trip.
+    pub(crate) fn pdf_filename(&self, ocr_pages: usize) -> String {
+        format!(
+            "{} p{ocr_pages} {INKREMENT_TAG}.pdf",
+            self.filename_prefix(),
         )
     }
 

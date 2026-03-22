@@ -216,35 +216,44 @@ struct DocRow {
     repo: String,
     /// Short SHA parsed from the filename.
     short_sha: String,
+    /// Number of OCR-relevant pages (before source reference section).
+    ocr_pages: usize,
     /// Whether this doc is selected for processing.
     status: ReviewStatus,
 }
 
 impl DocRow {
     /// Parse an inkrement filename into a DocRow.
-    /// Expected format: "#72 Atomic-Industries-crab-rave [747e7fe8] inkrement.pdf"
+    /// Expected format: "#72 Atomic-Industries-crab-rave [747e7fe8] p42 inkrement.pdf"
     fn from_remarkable(doc_id: DocumentId, name: &str) -> Self {
-        // Parse structured fields from the filename, fall back to raw name
-        let (number, repo, short_sha) = Self::parse_filename(name)
-            .unwrap_or_else(|| ("?".to_string(), name.to_string(), "?".to_string()));
+        let (number, repo, short_sha, ocr_pages) = Self::parse_filename(name)
+            .unwrap_or_else(|| ("?".to_string(), name.to_string(), "?".to_string(), 0));
 
         Self {
             doc_id,
             number,
             repo,
             short_sha,
+            ocr_pages,
             status: ReviewStatus::Available,
         }
     }
 
-    /// Try to extract PR number, repo, and SHA from an inkrement filename.
-    fn parse_filename(name: &str) -> Option<(String, String, String)> {
-        // "#72 Atomic-Industries-crab-rave [747e7fe8] inkrement.pdf"
+    /// Try to extract PR number, repo, SHA, and OCR page count from an inkrement filename.
+    fn parse_filename(name: &str) -> Option<(String, String, String, usize)> {
+        // "#72 Atomic-Industries-crab-rave [747e7fe8] p42 inkrement.pdf"
         let rest = name.strip_prefix('#')?;
         let (number, rest) = rest.split_once(' ')?;
         let (repo, rest) = rest.split_once(" [")?;
-        let (sha, _) = rest.split_once(']')?;
-        Some((format!("#{number}"), repo.to_string(), sha.to_string()))
+        let (sha, rest) = rest.split_once("] ")?;
+        let (pages_str, _) = rest.split_once(' ')?;
+        let ocr_pages = pages_str.strip_prefix('p')?.parse().ok()?;
+        Some((
+            format!("#{number}"),
+            repo.to_string(),
+            sha.to_string(),
+            ocr_pages,
+        ))
     }
 
     /// Render this document as a table row.
@@ -395,7 +404,10 @@ impl App {
                                 .enumerate()
                                 .map(|(i, pr)| PrRow {
                                     pr_index: i,
-                                    status: if self.existing_filenames.contains(&pr.pdf_filename())
+                                    status: if self
+                                        .existing_filenames
+                                        .iter()
+                                        .any(|f| f.starts_with(&pr.filename_prefix()))
                                     {
                                         PrStatus::Uploaded
                                     } else {
@@ -434,7 +446,11 @@ impl App {
                             if let Some(ref pull_requests) = self.pull_requests {
                                 for row in &mut self.prs {
                                     let pr = &pull_requests.pull_requests[row.pr_index];
-                                    if self.existing_filenames.contains(&pr.pdf_filename()) {
+                                    if self
+                                        .existing_filenames
+                                        .iter()
+                                        .any(|f| f.starts_with(&pr.filename_prefix()))
+                                    {
                                         row.status = PrStatus::Uploaded;
                                     }
                                 }
@@ -633,28 +649,25 @@ impl App {
         };
 
         // Collect the queued PR indices and corresponding data
-        let queued: Vec<(usize, String)> = self
+        let queued_indices: Vec<usize> = self
             .prs
             .iter()
             .filter(|row| row.status == PrStatus::Queued)
-            .map(|row| {
-                let pr = &pull_requests.pull_requests[row.pr_index];
-                (row.pr_index, pr.pdf_filename())
-            })
+            .map(|row| row.pr_index)
             .collect();
 
-        if queued.is_empty() {
+        if queued_indices.is_empty() {
             return;
         }
 
         let reviewer = pull_requests.reviewer.clone();
-        let total_steps = queued.len() * 4; // 4 steps per PR: diff, sources, render, upload
+        let total_steps = queued_indices.len() * 4; // 4 steps per PR: diff, sources, render, upload
         let tx = self.bg_tx.clone();
 
         // TODO: Clone is only here to send PR data to the upload worker thread. Fix this.
-        let pr_data: Vec<(usize, PullRequest)> = queued
+        let pr_data: Vec<(usize, PullRequest)> = queued_indices
             .iter()
-            .map(|(idx, _)| {
+            .map(|idx| {
                 let pr = &pull_requests.pull_requests[*idx];
                 (*idx, pr.clone())
             })
@@ -728,7 +741,7 @@ impl App {
                     total_steps,
                     format!("Uploading {name} to reMarkable..."),
                 ));
-                let filename = pr.pdf_filename();
+                let filename = pr.pdf_filename(pdf.ocr_page_count);
                 match rm.upload(&filename, &pdf) {
                     Ok(()) => {
                         let _ = tx.send(BackgroundMessage::UploadedPr(*pr_index));
@@ -752,13 +765,13 @@ impl App {
             return;
         }
 
-        let queued: Vec<(DocumentId, String)> = self
+        let queued: Vec<(DocumentId, String, usize)> = self
             .docs
             .iter()
             .filter(|doc| doc.status == ReviewStatus::Queued)
             .map(|doc| {
                 let display = format!("{} {}", doc.number, doc.repo);
-                (doc.doc_id.clone(), display)
+                (doc.doc_id.clone(), display, doc.ocr_pages)
             })
             .collect();
 
@@ -780,7 +793,7 @@ impl App {
                 }
             };
 
-            for (step, (doc_id, name)) in queued.iter().enumerate() {
+            for (step, (doc_id, name, ocr_pages)) in queued.iter().enumerate() {
                 let _ = tx.send(BackgroundMessage::UploadProgress(
                     step,
                     total_steps,
@@ -798,7 +811,7 @@ impl App {
                 };
 
                 // Strip source reference pages from the annotated PDF
-                let stripped = match pdf_strip::strip_source_pages(&pdf_bytes) {
+                let stripped = match pdf_strip::strip_source_pages(&pdf_bytes, *ocr_pages) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!(

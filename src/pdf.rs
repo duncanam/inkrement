@@ -113,8 +113,12 @@ impl typst::World for InkrementWorld {
     }
 }
 
-/// A rendered PDF
-pub(crate) struct Pdf(Vec<u8>);
+/// A rendered PDF with metadata about its structure.
+pub(crate) struct Pdf {
+    bytes: Vec<u8>,
+    /// Number of pages containing review content (before source reference pages).
+    pub(crate) ocr_page_count: usize,
+}
 
 impl Pdf {
     /// Render review data to a PDF
@@ -133,23 +137,29 @@ impl Pdf {
 
         let options = PdfOptions::default();
 
-        let pdf = typst_pdf::pdf(&document, &options).map_err(|diagnostics| {
+        let pdf_bytes = typst_pdf::pdf(&document, &options).map_err(|diagnostics| {
             let messages: Vec<String> = diagnostics.iter().map(|d| d.message.to_string()).collect();
             eyre!("PDF generation failed:\n{}", messages.join("\n"))
         })?;
 
-        Ok(Self(pdf))
+        // Calculate the number of review-only pages (before the source reference section).
+        let ocr_page_count = document.pages.len() - review_data.source_page_count();
+
+        Ok(Self {
+            bytes: pdf_bytes,
+            ocr_page_count,
+        })
     }
 
     /// Get the raw PDF bytes
     pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes
     }
 
     /// Write the PDF to a file in the given directory
     pub(crate) fn write(&self, output_dir: &Path, filename: &str) -> Result<()> {
         let path = output_dir.join(filename);
-        std::fs::write(&path, &self.0)
+        std::fs::write(&path, &self.bytes)
             .wrap_err_with(|| format!("failed to write {}", path.display()))
     }
 }
