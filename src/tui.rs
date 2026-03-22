@@ -193,6 +193,79 @@ impl PrRow {
     }
 }
 
+/// The review status of a document in the Publish tab.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReviewStatus {
+    /// Available for selection.
+    Available,
+    /// Selected for download + review.
+    Queued,
+}
+
+/// A row in the Publish tab's document table.
+///
+/// Represents an inkrement document on the reMarkable that may contain
+/// handwritten review annotations ready to be published.
+struct DocRow {
+    /// The document's ID on the reMarkable (needed for download).
+    doc_id: String,
+    /// PR number parsed from the filename.
+    number: String,
+    /// Repository name parsed from the filename.
+    repo: String,
+    /// Short SHA parsed from the filename.
+    short_sha: String,
+    /// Whether this doc is selected for processing.
+    status: ReviewStatus,
+}
+
+impl DocRow {
+    /// Parse an inkrement filename into a DocRow.
+    /// Expected format: "#72 Atomic-Industries-crab-rave [747e7fe8] inkrement.pdf"
+    fn from_remarkable(doc_id: String, name: &str) -> Self {
+        // Parse structured fields from the filename, fall back to raw name
+        let (number, repo, short_sha) = Self::parse_filename(name)
+            .unwrap_or_else(|| ("?".to_string(), name.to_string(), "?".to_string()));
+
+        Self {
+            doc_id,
+            number,
+            repo,
+            short_sha,
+            status: ReviewStatus::Available,
+        }
+    }
+
+    /// Try to extract PR number, repo, and SHA from an inkrement filename.
+    fn parse_filename(name: &str) -> Option<(String, String, String)> {
+        // "#72 Atomic-Industries-crab-rave [747e7fe8] inkrement.pdf"
+        let rest = name.strip_prefix('#')?;
+        let (number, rest) = rest.split_once(' ')?;
+        let (repo, rest) = rest.split_once(" [")?;
+        let (sha, _) = rest.split_once(']')?;
+        Some((
+            format!("#{number}"),
+            repo.to_string(),
+            sha.to_string(),
+        ))
+    }
+
+    /// Render this document as a table row.
+    fn to_row(&self) -> Row<'_> {
+        let checkbox = match self.status {
+            ReviewStatus::Queued => Cell::from("[x]").style(Style::default().fg(Color::Yellow)),
+            ReviewStatus::Available => Cell::from("[ ]"),
+        };
+
+        Row::new(vec![
+            checkbox,
+            Cell::from(self.number.as_str()),
+            Cell::from(self.repo.as_str()),
+            Cell::from(self.short_sha.as_str()),
+        ])
+    }
+}
+
 /// Messages sent from background threads to the TUI event loop.
 enum BackgroundMessage {
     /// A status update to display while loading (e.g. "Fetching PRs from GitHub...").
@@ -200,7 +273,8 @@ enum BackgroundMessage {
     /// GitHub PR data has been fetched (or failed).
     PrsLoaded(Result<PullRequests>),
     /// reMarkable connection + document listing result.
-    RemarkableLoaded(Result<(RemarkableStatus, Vec<String>)>),
+    /// Contains (status, vec of (doc_id, visible_name)).
+    RemarkableLoaded(Result<(RemarkableStatus, Vec<(String, String)>)>),
     /// Upload progress update: (current_step, total_steps, message).
     UploadProgress(usize, usize, String),
     /// A single PR upload completed (index into prs vec).
@@ -236,8 +310,12 @@ pub(crate) struct App {
     prs: Vec<PrRow>,
     /// The full PR data from GitHub (needed for rendering PDFs).
     pull_requests: Option<PullRequests>,
-    /// Ratatui table selection state (tracks cursor position).
-    table_state: TableState,
+    /// Ratatui table selection state for Get tab.
+    get_table_state: TableState,
+    /// The list of reMarkable docs shown in the Publish tab.
+    docs: Vec<DocRow>,
+    /// Ratatui table selection state for Publish tab.
+    publish_table_state: TableState,
     /// Whether the reMarkable is reachable via USB.
     remarkable_status: RemarkableStatus,
     /// Filenames of inkrement docs already on the reMarkable.
@@ -282,8 +360,11 @@ impl App {
             ));
             let result = RemarkableClient::connect().and_then(|rm| {
                 let docs = rm.list_inkrement_documents()?;
-                let names = docs.into_iter().map(|d| d.visible_name).collect();
-                Ok((RemarkableStatus::Connected, names))
+                let pairs = docs
+                    .into_iter()
+                    .map(|d| (d.id_str().to_string(), d.visible_name))
+                    .collect();
+                Ok((RemarkableStatus::Connected, pairs))
             });
             let _ = tx_rm.send(BackgroundMessage::RemarkableLoaded(
                 result.or_else(|_| Ok((RemarkableStatus::Disconnected, Vec::new()))),
@@ -294,7 +375,9 @@ impl App {
             tab: Tab::GetPrs,
             prs: Vec::new(),
             pull_requests: None,
-            table_state: TableState::default(),
+            get_table_state: TableState::default(),
+            docs: Vec::new(),
+            publish_table_state: TableState::default(),
             remarkable_status: RemarkableStatus::Disconnected,
             existing_filenames: HashSet::new(),
             bg_tx: tx,
@@ -349,7 +432,7 @@ impl App {
                                 })
                                 .collect();
                             if !self.prs.is_empty() {
-                                self.table_state.select(Some(0));
+                                self.get_table_state.select(Some(0));
                             }
                             self.pull_requests = Some(pull_requests);
                         }
@@ -361,9 +444,22 @@ impl App {
                 }
                 BackgroundMessage::RemarkableLoaded(result) => {
                     match result {
-                        Ok((status, filenames)) => {
+                        Ok((status, doc_pairs)) => {
                             self.remarkable_status = status;
-                            self.existing_filenames = filenames.into_iter().collect();
+                            self.existing_filenames = doc_pairs
+                                .iter()
+                                .map(|(_, name)| name.clone())
+                                .collect();
+
+                            // Populate the Publish tab with docs from reMarkable
+                            self.docs = doc_pairs
+                                .iter()
+                                .map(|(id, name)| DocRow::from_remarkable(id.clone(), name))
+                                .collect();
+                            if !self.docs.is_empty() {
+                                self.publish_table_state.select(Some(0));
+                            }
+
                             // Re-check uploaded status for any already-loaded PRs
                             if let Some(ref pull_requests) = self.pull_requests {
                                 for row in &mut self.prs {
@@ -445,39 +541,64 @@ impl App {
         Ok(())
     }
 
-    /// Move the table cursor up (negative) or down (positive), clamping to bounds.
+    /// Move the active tab's table cursor up (negative) or down (positive).
     fn move_cursor(&mut self, delta: i32) {
-        if self.prs.is_empty() {
+        let (len, state) = match self.tab {
+            Tab::GetPrs => (self.prs.len(), &mut self.get_table_state),
+            Tab::PublishReviews => (self.docs.len(), &mut self.publish_table_state),
+        };
+        if len == 0 {
             return;
         }
-        let current = self.table_state.selected().unwrap_or(0) as i32;
-        let next = (current + delta).clamp(0, self.prs.len() as i32 - 1) as usize;
-        self.table_state.select(Some(next));
+        let current = state.selected().unwrap_or(0) as i32;
+        let next = (current + delta).clamp(0, len as i32 - 1) as usize;
+        state.select(Some(next));
     }
 
-    /// Toggle the selected PR between Available and Queued.
-    /// Does nothing if the PR is already Uploaded.
+    /// Toggle the selected item in the active tab.
     fn toggle_selected(&mut self) {
-        let Some(idx) = self.table_state.selected() else {
-            return;
-        };
-
-        let pr = &mut self.prs[idx];
-        if pr.status == PrStatus::Uploaded {
-            return;
+        match self.tab {
+            Tab::GetPrs => {
+                let Some(idx) = self.get_table_state.selected() else {
+                    return;
+                };
+                let pr = &mut self.prs[idx];
+                if pr.status == PrStatus::Uploaded {
+                    return;
+                }
+                pr.status = match pr.status {
+                    PrStatus::Available => PrStatus::Queued,
+                    PrStatus::Queued => PrStatus::Available,
+                    PrStatus::Uploaded => PrStatus::Uploaded,
+                };
+            }
+            Tab::PublishReviews => {
+                let Some(idx) = self.publish_table_state.selected() else {
+                    return;
+                };
+                let doc = &mut self.docs[idx];
+                doc.status = match doc.status {
+                    ReviewStatus::Available => ReviewStatus::Queued,
+                    ReviewStatus::Queued => ReviewStatus::Available,
+                };
+            }
         }
-        pr.status = match pr.status {
-            PrStatus::Available => PrStatus::Queued,
-            PrStatus::Queued => PrStatus::Available,
-            PrStatus::Uploaded => PrStatus::Uploaded,
-        };
     }
 
-    /// Queue all available (non-uploaded) PRs for upload.
+    /// Select all items in the active tab.
     fn select_all(&mut self) {
-        for pr in &mut self.prs {
-            if pr.status == PrStatus::Available {
-                pr.status = PrStatus::Queued;
+        match self.tab {
+            Tab::GetPrs => {
+                for pr in &mut self.prs {
+                    if pr.status == PrStatus::Available {
+                        pr.status = PrStatus::Queued;
+                    }
+                }
+            }
+            Tab::PublishReviews => {
+                for doc in &mut self.docs {
+                    doc.status = ReviewStatus::Queued;
+                }
             }
         }
     }
@@ -717,12 +838,12 @@ impl App {
         .block(Block::default().borders(Borders::ALL))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-        frame.render_stateful_widget(table, chunks[2], &mut self.table_state);
+        frame.render_stateful_widget(table, chunks[2], &mut self.get_table_state);
 
         // Scrollbar on the right edge of the table
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let mut scrollbar_state =
-            ScrollbarState::new(self.prs.len()).position(self.table_state.selected().unwrap_or(0));
+            ScrollbarState::new(self.prs.len()).position(self.get_table_state.selected().unwrap_or(0));
         frame.render_stateful_widget(
             scrollbar,
             chunks[2].inner(ratatui::layout::Margin {
@@ -734,15 +855,57 @@ impl App {
     }
 
     /// Render the "Publish Reviews" tab (placeholder for now).
-    fn render_publish_tab(&self, frame: &mut Frame, area: Rect) {
-        let placeholder = Paragraph::new("  Coming soon...")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Publish Reviews "),
-            );
-        frame.render_widget(placeholder, area);
+    fn render_publish_tab(&mut self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2), // title
+                Constraint::Length(1), // legend
+                Constraint::Min(3),   // table
+            ])
+            .split(area);
+
+        let title = Paragraph::new("Reviews on reMarkable")
+            .style(Style::default().bold())
+            .centered();
+        frame.render_widget(title, chunks[0]);
+
+        let legend = Paragraph::new(Line::from(vec![
+            Span::styled(" [x]", Style::default().fg(Color::Yellow)),
+            Span::raw(" queued for review"),
+        ]));
+        frame.render_widget(legend, chunks[1]);
+
+        let header = Row::new(vec!["", "#", "Repository", "SHA"])
+            .style(Style::default().fg(Color::Gray))
+            .bottom_margin(1);
+
+        let table = Table::new(
+            self.docs.iter().map(DocRow::to_row),
+            [
+                Constraint::Length(5),  // checkbox
+                Constraint::Length(6),  // number
+                Constraint::Min(20),   // repo
+                Constraint::Length(10), // sha
+            ],
+        )
+        .header(header)
+        .block(Block::default().borders(Borders::ALL))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+
+        frame.render_stateful_widget(table, chunks[2], &mut self.publish_table_state);
+
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+        let mut scrollbar_state = ScrollbarState::new(self.docs.len())
+            .position(self.publish_table_state.selected().unwrap_or(0));
+        frame.render_stateful_widget(
+            scrollbar,
+            chunks[2].inner(ratatui::layout::Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut scrollbar_state,
+        );
     }
 
     /// Render the keybind help bar at the bottom of the screen.

@@ -64,6 +64,11 @@ impl Document {
         self.entry_type == EntryType::DocumentType
     }
 
+    /// Get the document's unique ID as a string.
+    pub(crate) fn id_str(&self) -> &str {
+        self.id.as_str()
+    }
+
     /// Check if this document was created by inkrement
     fn is_inkrement(&self) -> bool {
         self.visible_name.contains(INKREMENT_TAG)
