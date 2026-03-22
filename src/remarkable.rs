@@ -82,7 +82,7 @@ impl RemarkableClient {
     /// Create a new client, verifying the reMarkable is reachable
     pub(crate) fn connect() -> Result<Self> {
         let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(120))
             .build()
             .wrap_err("failed to create HTTP client while trying to connect to reMarkable")?;
 
@@ -160,7 +160,13 @@ impl RemarkableClient {
             .post(format!("{BASE_URL}/upload"))
             .multipart(form)
             .send()
-            .wrap_err("failed to upload PDF to reMarkable")?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    eyre!("upload timed out - the PDF may be very large, or the USB connection is slow")
+                } else {
+                    eyre!("failed to upload PDF to reMarkable: {e}")
+                }
+            })?;
 
         if !response.status().is_success() {
             let body = response.text().unwrap_or_default();
@@ -179,7 +185,13 @@ impl RemarkableClient {
                 doc_id.as_str()
             ))
             .send()
-            .wrap_err("failed to download document from reMarkable")?;
+            .map_err(|e| {
+                if e.is_timeout() {
+                    eyre!("download timed out - the PDF may be very large, or the USB connection is slow")
+                } else {
+                    eyre!("failed to download document from reMarkable: {e}")
+                }
+            })?;
 
         if !response.status().is_success() {
             return Err(eyre!(
