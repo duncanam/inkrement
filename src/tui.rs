@@ -10,8 +10,10 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
 
 use crate::{
+    annotate,
     pdf::Pdf,
     pdf_strip,
+    post_review::{self, ReviewTarget},
     pull_changes::{PullRequest, PullRequests},
     remarkable::{DocumentId, RemarkableClient},
     review_data::ReviewData,
@@ -758,20 +760,25 @@ impl App {
         });
     }
 
-    /// Download selected documents from reMarkable and prepare for review.
+    /// Download, interpret, and post reviews for selected documents.
     fn execute_publish(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
             self.loading_message = Some("reMarkable not connected".to_string());
             return;
         }
 
-        let queued: Vec<(DocumentId, String, usize)> = self
+        // Collect queued docs with their filename info for repo resolution
+        let queued: Vec<(DocumentId, String, String, usize)> = self
             .docs
             .iter()
             .filter(|doc| doc.status == ReviewStatus::Queued)
             .map(|doc| {
                 let display = format!("{} {}", doc.number, doc.repo);
-                (doc.doc_id.clone(), display, doc.ocr_pages)
+                let full_name = format!(
+                    "{} {} [{}] p{} inkrement",
+                    doc.number, doc.repo, doc.short_sha, doc.ocr_pages,
+                );
+                (doc.doc_id.clone(), display, full_name, doc.ocr_pages)
             })
             .collect();
 
@@ -779,7 +786,8 @@ impl App {
             return;
         }
 
-        let total_steps = queued.len();
+        // 4 steps per doc: download, strip, interpret, post
+        let total_steps = queued.len() * 4;
         let tx = self.bg_tx.clone();
 
         thread::spawn(move || {
@@ -793,13 +801,23 @@ impl App {
                 }
             };
 
-            for (step, (doc_id, name, ocr_pages)) in queued.iter().enumerate() {
+            let tmp_dir = std::env::temp_dir().join("inkrement");
+            if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
+                let _ = tx.send(BackgroundMessage::UploadError(format!(
+                    "Failed to create temp dir: {e}"
+                )));
+                return;
+            }
+
+            let mut step = 0;
+
+            for (doc_id, name, full_name, ocr_pages) in &queued {
+                // Step 1: Download
                 let _ = tx.send(BackgroundMessage::UploadProgress(
                     step,
                     total_steps,
                     format!("Downloading {name}..."),
                 ));
-
                 let pdf_bytes = match rm.download(doc_id) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -809,8 +827,9 @@ impl App {
                         return;
                     }
                 };
+                step += 1;
 
-                // Strip source reference pages from the annotated PDF
+                // Step 2: Strip source pages
                 let _ = tx.send(BackgroundMessage::UploadProgress(
                     step,
                     total_steps,
@@ -820,33 +839,72 @@ impl App {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!(
-                            "Failed to strip source pages from {name}: {e}"
+                            "Failed to strip {name}: {e}"
                         )));
                         return;
                     }
                 };
 
-                // Save stripped PDF to temp dir for Claude processing
-                let tmp_dir = std::env::temp_dir().join("inkrement");
-                if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-                    let _ = tx.send(BackgroundMessage::UploadError(format!(
-                        "Failed to create temp dir: {e}"
-                    )));
-                    return;
-                }
-
-                let filename = format!("{name}.pdf");
-                let path = tmp_dir.join(&filename);
-                if let Err(e) = std::fs::write(&path, &stripped) {
+                let pdf_path = tmp_dir.join(format!("{name}.pdf"));
+                if let Err(e) = std::fs::write(&pdf_path, &stripped) {
                     let _ = tx.send(BackgroundMessage::UploadError(format!(
                         "Failed to save {}: {e}",
-                        path.display()
+                        pdf_path.display()
                     )));
                     return;
                 }
+                step += 1;
 
-                // TODO: Send stripped PDF to Claude for OCR interpretation
-                // TODO: Post review to GitHub
+                // Step 3: Interpret via Claude
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Interpreting {name} via Claude..."),
+                ));
+                let review = match annotate::interpret_pdf(&pdf_path) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to interpret {name}: {e}"
+                        )));
+                        return;
+                    }
+                };
+
+                if review.is_empty() {
+                    let _ = tx.send(BackgroundMessage::UploadProgress(
+                        step,
+                        total_steps,
+                        format!("Skipping {name} (no annotations)"),
+                    ));
+                    step += 2; // skip interpret + post steps
+                    continue;
+                }
+                step += 1;
+
+                // Step 4: Post to GitHub
+                let _ = tx.send(BackgroundMessage::UploadProgress(
+                    step,
+                    total_steps,
+                    format!("Posting review for {name} to GitHub..."),
+                ));
+                let target = match ReviewTarget::from_filename(full_name) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to parse PR info for {name}: {e}"
+                        )));
+                        return;
+                    }
+                };
+
+                if let Err(e) = post_review::post_review(&target, &review) {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to post review for {name}: {e}"
+                    )));
+                    return;
+                }
+                step += 1;
             }
 
             let _ = tx.send(BackgroundMessage::UploadComplete);
