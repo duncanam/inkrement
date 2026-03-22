@@ -4,7 +4,13 @@ use color_eyre::eyre::{Context, Result};
 
 use color_eyre::eyre::eyre;
 
-use crate::{annotate, pdf_strip, pull_changes::{PullRequests, INKREMENT_TAG}, remarkable::RemarkableClient};
+use crate::{
+    annotate::{self, InterpretedReview},
+    pdf_strip,
+    post_review::{self, ReviewTarget},
+    pull_changes::{INKREMENT_TAG, PullRequests},
+    remarkable::RemarkableClient,
+};
 
 /// Parse the OCR page count from an inkrement filename.
 /// Expected format: "#72 repo [sha] p42 inkrement.pdf" -> 42
@@ -152,10 +158,7 @@ pub(crate) fn interpret_pdfs(input_dir: &Path) -> Result<()> {
         .collect();
 
     if entries.is_empty() {
-        println!(
-            "No inkrement PDFs found in {}",
-            input_dir.display()
-        );
+        println!("No inkrement PDFs found in {}", input_dir.display());
         return Ok(());
     }
 
@@ -185,6 +188,61 @@ pub(crate) fn interpret_pdfs(input_dir: &Path) -> Result<()> {
             review.annotations.len(),
             review.decision,
         );
+    }
+
+    Ok(())
+}
+
+/// Post reviews from JSON files to GitHub.
+pub(crate) fn post_reviews(input_dir: &Path) -> Result<()> {
+    let entries: Vec<_> = fs::read_dir(input_dir)
+        .wrap_err_with(|| format!("failed to read directory {}", input_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.contains(INKREMENT_TAG) && name.ends_with(".json")
+        })
+        .collect();
+
+    if entries.is_empty() {
+        println!("No inkrement JSON files found in {}", input_dir.display());
+        return Ok(());
+    }
+
+    for entry in &entries {
+        let json_path = entry.path();
+        let name = json_path.file_name().unwrap().to_string_lossy();
+
+        let json =
+            fs::read_to_string(&json_path).wrap_err_with(|| format!("failed to read {name}"))?;
+        let review: InterpretedReview =
+            serde_json::from_str(&json).wrap_err_with(|| format!("failed to parse {name}"))?;
+
+        if review.is_empty() {
+            println!("Skipping {name} (no annotations)");
+            continue;
+        }
+
+        let target = ReviewTarget::from_filename(&name)
+            .wrap_err_with(|| format!("failed to parse PR info from {name}"))?;
+
+        println!(
+            "Posting review for {}#{} ({} annotations, decision: {:?})...",
+            target.repo,
+            target.number,
+            review.annotations.len(),
+            review.decision,
+        );
+
+        post_review::post_review(&target, &review).wrap_err_with(|| {
+            format!(
+                "failed to post review for {}#{}",
+                target.repo, target.number
+            )
+        })?;
+
+        println!("Posted review for {}#{}", target.repo, target.number);
     }
 
     Ok(())

@@ -8,6 +8,7 @@ mod diff_parse;
 mod fetch_files;
 mod pdf;
 mod pdf_strip;
+mod post_review;
 mod pull_changes;
 mod remarkable;
 mod review_data;

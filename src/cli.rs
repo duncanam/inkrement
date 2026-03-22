@@ -27,6 +27,7 @@ Scripting:
   inkrement generate   Generate review PDFs locally for preview
   inkrement download   Download annotated PDFs from reMarkable (stripped)
   inkrement interpret  Run Claude OCR on stripped PDFs, output JSON
+  inkrement post       Post reviews from JSON files to GitHub
 
 Required CLI tools: gh, claude",
     version
@@ -58,6 +59,12 @@ enum Command {
         #[arg(short, long, default_value = ".")]
         input: PathBuf,
     },
+    /// Post reviews from JSON files to GitHub
+    Post {
+        /// Directory containing JSON review files
+        #[arg(short, long, default_value = ".")]
+        input: PathBuf,
+    },
 }
 
 impl Cli {
@@ -74,6 +81,7 @@ impl Cli {
             Some(Command::Generate { output }) => commands::generate_local_pdfs(&output),
             Some(Command::Download { output }) => commands::download_annotated_pdfs(&output),
             Some(Command::Interpret { input }) => commands::interpret_pdfs(&input),
+            Some(Command::Post { input }) => commands::post_reviews(&input),
         }
     }
 }

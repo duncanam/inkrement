@@ -68,8 +68,8 @@ fn extract_json_from_text(text: &str) -> Option<&str> {
 /// Extract the text content from the Claude CLI's JSON envelope.
 /// The CLI with `--output-format json` returns `{"result": "...text...", ...}`.
 fn extract_claude_response(raw: &str) -> Result<String> {
-    let envelope: serde_json::Value = serde_json::from_str(raw)
-        .wrap_err("Claude CLI output is not valid JSON")?;
+    let envelope: serde_json::Value =
+        serde_json::from_str(raw).wrap_err("Claude CLI output is not valid JSON")?;
 
     // Try common envelope shapes
     if let Some(result) = envelope.get("result").and_then(|v| v.as_str()) {
@@ -192,9 +192,11 @@ pub(crate) fn interpret_pdf(pdf_path: &std::path::Path) -> Result<InterpretedRev
 
     // Claude may include prose before/after the JSON, possibly in a markdown code block.
     // Find the JSON object by looking for the outermost { ... }.
-    let json_str = extract_json_from_text(&text)
-        .wrap_err_with(|| format!("could not find JSON in Claude's response.\nRaw response:\n{text}"))?;
+    let json_str = extract_json_from_text(&text).wrap_err_with(|| {
+        format!("could not find JSON in Claude's response.\nRaw response:\n{text}")
+    })?;
 
-    serde_json::from_str(json_str)
-        .wrap_err_with(|| format!("failed to parse Claude's response as annotation JSON.\nRaw JSON:\n{json_str}"))
+    serde_json::from_str(json_str).wrap_err_with(|| {
+        format!("failed to parse Claude's response as annotation JSON.\nRaw JSON:\n{json_str}")
+    })
 }
