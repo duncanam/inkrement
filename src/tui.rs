@@ -276,8 +276,6 @@ impl DocRow {
 
 /// Messages sent from background threads to the TUI event loop.
 enum BackgroundMessage {
-    /// A status update to display while loading (e.g. "Fetching PRs from GitHub...").
-    LoadingStatus(String),
     /// GitHub PR data has been fetched (or failed).
     PrsLoaded(Result<PullRequests>),
     /// reMarkable connection + document listing result.
@@ -394,9 +392,6 @@ impl App {
     fn process_background_messages(&mut self) {
         while let Ok(msg) = self.bg_rx.try_recv() {
             match msg {
-                BackgroundMessage::LoadingStatus(message) => {
-                    self.loading_message = Some(message);
-                }
                 BackgroundMessage::PrsLoaded(result) => {
                     match result {
                         Ok(pull_requests) => {
@@ -463,7 +458,6 @@ impl App {
                                 Some(format!("reMarkable connection failed: {e}"));
                         }
                     }
-                    self.check_loading_complete();
                 }
                 BackgroundMessage::UploadProgress(current_step, total_steps, message) => {
                     self.progress = Some(Progress {
@@ -599,22 +593,16 @@ impl App {
             return;
         }
 
-        self.loading_message = Some("Refreshing...".to_string());
-        self.loading_pending = 2;
+        self.loading_message = Some("Fetching PRs from GitHub...".to_string());
+        self.loading_pending = 1;
 
         let tx_gh = self.bg_tx.clone();
         thread::spawn(move || {
-            let _ = tx_gh.send(BackgroundMessage::LoadingStatus(
-                "Fetching PRs from GitHub...".to_string(),
-            ));
             let _ = tx_gh.send(BackgroundMessage::PrsLoaded(PullRequests::fetch()));
         });
 
         let tx_rm = self.bg_tx.clone();
         thread::spawn(move || {
-            let _ = tx_rm.send(BackgroundMessage::LoadingStatus(
-                "Connecting to reMarkable...".to_string(),
-            ));
             let result = RemarkableClient::connect().and_then(|rm| {
                 let docs = rm.list_inkrement_documents()?;
                 let pairs = docs.into_iter().map(|d| (d.id, d.visible_name)).collect();
