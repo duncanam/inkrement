@@ -6,6 +6,7 @@ mod cli;
 mod commands;
 mod diff_parse;
 mod fetch_files;
+mod markdown;
 mod pdf;
 mod pdf_strip;
 mod post_review;

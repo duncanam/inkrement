@@ -72,6 +72,7 @@ fn fetch_current_user() -> Result<String> {
 struct PullRequestResponse {
     number: u32,
     title: String,
+    body: String,
     author: GitHubUser,
     additions: usize,
     deletions: usize,
@@ -127,6 +128,7 @@ fn find_last_reviewed_commit<'a>(reviews: &'a [Review], reviewer: &str) -> Optio
 pub(crate) struct PullRequest {
     pub(crate) number: u32,
     pub(crate) title: String,
+    pub(crate) body: String,
     pub(crate) repo_name: String,
     pub(crate) author: String,
     pub(crate) additions: usize,
@@ -287,7 +289,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
                 "--repo",
                 repo_name,
                 "--json",
-                "number,title,author,additions,deletions,headRefOid,baseRefOid",
+                "number,title,body,author,additions,deletions,headRefOid,baseRefOid",
             ])
             .output()
             .wrap_err("failed to run gh CLI while fetching pull requests")?;
@@ -307,6 +309,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
         Ok(PullRequest {
             number: resp.number,
             title: resp.title,
+            body: resp.body,
             repo_name: repo_name.to_string(),
             author: resp.author.login,
             additions: resp.additions,
@@ -589,6 +592,7 @@ mod tests {
         let json = r#"{
             "number": 42,
             "title": "Add widget endpoint",
+            "body": "Adds the /widgets REST endpoint.\n\nCloses #41",
             "author": {"login": "jsmith"},
             "additions": 150,
             "deletions": 30,
@@ -599,6 +603,7 @@ mod tests {
         let resp: PullRequestResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.number, 42);
         assert_eq!(resp.title, "Add widget endpoint");
+        assert_eq!(resp.body, "Adds the /widgets REST endpoint.\n\nCloses #41");
         assert_eq!(resp.author.login, "jsmith");
         assert_eq!(resp.additions, 150);
         assert_eq!(resp.deletions, 30);

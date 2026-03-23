@@ -167,7 +167,22 @@
 ]
 
 // ============================================================================
-// Page 2: Files changed
+// PR Description (may span multiple pages)
+// ============================================================================
+#if data.description != "" [
+  #page[
+    == Description
+    #text(size: 14pt, weight: "bold")[Description]
+    #v(0.15in)
+    #line(length: 100%, stroke: 0.5pt + light-gray)
+    #v(0.15in)
+    #set text(size: 9pt)
+    #eval(data.description, mode: "markup")
+  ]
+]
+
+// ============================================================================
+// Files changed
 // ============================================================================
 == Files Changed
 #page[

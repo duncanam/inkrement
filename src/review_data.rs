@@ -3,6 +3,7 @@ use unidiff::{Hunk, Line, PatchSet, PatchedFile};
 
 use crate::{
     fetch_files::SourceFiles,
+    markdown,
     pull_changes::{DiffMode, PullRequest, ResolvedDiff},
 };
 
@@ -44,6 +45,7 @@ fn lang_from_path(path: &str) -> &'static str {
 #[derive(Debug, Serialize)]
 pub(crate) struct ReviewData<'a> {
     title: &'a str,
+    description: String,
     repo: &'a str,
     number: u32,
     author: &'a str,
@@ -77,6 +79,7 @@ impl<'a> ReviewData<'a> {
 
         Self {
             title: &pr.title,
+            description: markdown::markdown_to_typst(&pr.body),
             repo: &pr.repo_name,
             number: pr.number,
             author: &pr.author,
