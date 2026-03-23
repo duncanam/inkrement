@@ -336,6 +336,8 @@ pub(crate) struct App {
     loading_pending: usize,
     /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
+    /// Error message shown as a red popup overlay, dismissed with Escape.
+    error_message: Option<String>,
     /// Set to true when the user presses 'q' to exit.
     should_quit: bool,
 }
@@ -363,6 +365,7 @@ impl App {
             loading_message: Some("Starting up...".to_string()),
             loading_pending: 0,
             progress: None,
+            error_message: None,
             should_quit: false,
         };
 
@@ -418,7 +421,7 @@ impl App {
                             self.pull_requests = Some(pull_requests);
                         }
                         Err(e) => {
-                            self.loading_message = Some(format!("Failed to load PRs: {e}"));
+                            self.error_message = Some(format!("Failed to load PRs: {e}"));
                         }
                     }
                     self.check_loading_complete();
@@ -454,7 +457,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            self.loading_message =
+                            self.error_message =
                                 Some(format!("reMarkable connection failed: {e}"));
                         }
                     }
@@ -476,7 +479,7 @@ impl App {
                 }
                 BackgroundMessage::UploadError(message) => {
                     self.progress = None;
-                    self.loading_message = Some(format!("Upload failed: {message}"));
+                    self.error_message = Some(message);
                 }
             }
         }
@@ -506,6 +509,12 @@ impl App {
 
         // Only handle key press events, not release
         if key.kind != KeyEventKind::Press {
+            return Ok(());
+        }
+
+        // Dismiss error popup on any key
+        if self.error_message.is_some() {
+            self.error_message = None;
             return Ok(());
         }
 
@@ -630,7 +639,7 @@ impl App {
     /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
     fn execute_get(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
-            self.loading_message = Some("reMarkable not connected".to_string());
+            self.error_message = Some("reMarkable not connected".to_string());
             return;
         }
 
@@ -759,7 +768,7 @@ impl App {
     /// Download, interpret, and post reviews for selected documents.
     fn execute_publish(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
-            self.loading_message = Some("reMarkable not connected".to_string());
+            self.error_message = Some("reMarkable not connected".to_string());
             return;
         }
 
@@ -924,6 +933,50 @@ impl App {
         self.render_main(frame, chunks[2]);
         self.render_footer(frame, chunks[3]);
         self.render_progress(frame, chunks[4]);
+
+        if let Some(error) = &self.error_message {
+            self.render_error_popup(frame, error.clone());
+        }
+    }
+
+    /// Render a centered red error popup overlay.
+    fn render_error_popup(&self, frame: &mut Frame, message: String) {
+        let area = frame.area();
+
+        // Size the popup: up to 60% width, height based on wrapped text + padding
+        let popup_width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
+        // Rough line count: wrap message to inner width (popup - borders - padding)
+        let inner_width = popup_width.saturating_sub(6) as usize;
+        let line_count = if inner_width > 0 {
+            message
+                .as_bytes()
+                .chunks(inner_width)
+                .count()
+                .max(1)
+        } else {
+            1
+        };
+        let popup_height = (line_count as u16 + 4).min(area.height.saturating_sub(4));
+
+        let x = (area.width.saturating_sub(popup_width)) / 2;
+        let y = (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .title(" Error ")
+            .title_style(Style::default().fg(Color::White).bold())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .style(Style::default().bg(Color::Black));
+
+        let text = Paragraph::new(message)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .style(Style::default().fg(Color::Red))
+            .block(block);
+
+        frame.render_widget(text, popup_area);
     }
 
     /// Render the version string and reMarkable connection status.
