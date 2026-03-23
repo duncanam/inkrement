@@ -806,16 +806,6 @@ impl App {
                 }
             };
 
-            let tmp_dir = match tempfile::tempdir() {
-                Ok(d) => d,
-                Err(e) => {
-                    let _ = tx.send(BackgroundMessage::UploadError(format!(
-                        "Failed to create temp dir: {e}"
-                    )));
-                    return;
-                }
-            };
-
             let mut step = 0;
 
             for (doc_id, name, full_name, ocr_pages) in &queued {
@@ -852,6 +842,15 @@ impl App {
                     }
                 };
 
+                let tmp_dir = match tempfile::tempdir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to create temp dir: {e}"
+                        )));
+                        return;
+                    }
+                };
                 let pdf_path = tmp_dir.path().join(format!("{name}.pdf"));
                 if let Err(e) = std::fs::write(&pdf_path, &stripped) {
                     let _ = tx.send(BackgroundMessage::UploadError(format!(

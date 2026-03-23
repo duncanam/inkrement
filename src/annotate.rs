@@ -165,7 +165,12 @@ If there are no handwritten annotations on the diff pages, return an empty array
 /// Calls the `claude` CLI as a subprocess with the PDF file,
 /// parses the structured JSON response into an `InterpretedReview`.
 pub(crate) fn interpret_pdf(pdf_path: &std::path::Path) -> Result<InterpretedReview> {
+    let parent_dir = pdf_path
+        .parent()
+        .ok_or_else(|| eyre!("PDF path has no parent directory"))?;
+
     let output = Command::new("claude")
+        .current_dir(parent_dir)
         .args([
             "-p",
             PROMPT,
