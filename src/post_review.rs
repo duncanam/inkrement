@@ -5,8 +5,7 @@ use serde::Serialize;
 
 use crate::annotate::{Annotation, DiffSide, InterpretedReview, ReviewDecision};
 
-const REVIEW_ATTRIBUTION: &str =
-    "Review via [Inkrement](https://github.com/duncanam/inkrement)";
+const REVIEW_ATTRIBUTION: &str = "Review via [Inkrement](https://github.com/duncanam/inkrement)";
 
 /// Metadata parsed from an inkrement filename needed to post a review.
 pub(crate) struct ReviewTarget {

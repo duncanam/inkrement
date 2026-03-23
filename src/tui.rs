@@ -457,8 +457,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            self.error_message =
-                                Some(format!("reMarkable connection failed: {e}"));
+                            self.error_message = Some(format!("reMarkable connection failed: {e}"));
                         }
                     }
                 }
@@ -943,15 +942,13 @@ impl App {
         let area = frame.area();
 
         // Size the popup: up to 60% width, height based on wrapped text + padding
-        let popup_width = (area.width * 3 / 5).max(40).min(area.width.saturating_sub(4));
+        let popup_width = (area.width * 3 / 5)
+            .max(40)
+            .min(area.width.saturating_sub(4));
         // Rough line count: wrap message to inner width (popup - borders - padding)
         let inner_width = popup_width.saturating_sub(6) as usize;
         let line_count = if inner_width > 0 {
-            message
-                .as_bytes()
-                .chunks(inner_width)
-                .count()
-                .max(1)
+            message.as_bytes().chunks(inner_width).count().max(1)
         } else {
             1
         };
