@@ -797,13 +797,15 @@ impl App {
                 }
             };
 
-            let tmp_dir = std::env::temp_dir().join("inkrement");
-            if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-                let _ = tx.send(BackgroundMessage::UploadError(format!(
-                    "Failed to create temp dir: {e}"
-                )));
-                return;
-            }
+            let tmp_dir = match tempfile::tempdir() {
+                Ok(d) => d,
+                Err(e) => {
+                    let _ = tx.send(BackgroundMessage::UploadError(format!(
+                        "Failed to create temp dir: {e}"
+                    )));
+                    return;
+                }
+            };
 
             let mut step = 0;
 
@@ -841,7 +843,7 @@ impl App {
                     }
                 };
 
-                let pdf_path = tmp_dir.join(format!("{name}.pdf"));
+                let pdf_path = tmp_dir.path().join(format!("{name}.pdf"));
                 if let Err(e) = std::fs::write(&pdf_path, &stripped) {
                     let _ = tx.send(BackgroundMessage::UploadError(format!(
                         "Failed to save {}: {e}",
