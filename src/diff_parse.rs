@@ -1,25 +1,12 @@
 use color_eyre::eyre::{Context, Result};
 use unidiff::PatchSet;
 
-use crate::pull_changes::PullRequest;
-
-/// Parses a unified diff string
-fn parse_diff(input: &str) -> Result<PatchSet> {
+/// Parses a unified diff string into a structured set of changes
+pub(crate) fn parse_diff(input: &str) -> Result<PatchSet> {
     // Note: this wrapper also allows us to contain and limit mutation
     let mut patch = PatchSet::new();
     patch.parse(input).wrap_err("could not parse git diff")?;
     Ok(patch)
-}
-
-impl PullRequest {
-    /// Parse the diff string into a structured set of changes
-    pub(crate) fn parse_diff(&self) -> Result<PatchSet> {
-        let diff = self
-            .fetch_diff()
-            .wrap_err("could not fetch diff while generating parsed diff")?;
-
-        parse_diff(&diff)
-    }
 }
 
 #[cfg(test)]

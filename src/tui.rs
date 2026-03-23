@@ -10,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
 
 use crate::{
-    annotate,
+    annotate, diff_parse,
     pdf::Pdf,
     pdf_strip,
     post_review::{self, ReviewTarget},
@@ -691,13 +691,20 @@ impl App {
             for (pr_index, pr) in &pr_data {
                 let name = format!("{}#{}", pr.repo_name, pr.number);
 
-                // Step 1: fetch diff
+                // Step 1: resolve diff (incremental if prior review exists)
                 let _ = tx.send(BackgroundMessage::UploadProgress(
                     step,
                     total_steps,
-                    format!("Fetching diff for {name}..."),
+                    format!("Resolving diff for {name}..."),
                 ));
-                let patch = match pr.parse_diff() {
+                let resolved = match pr.resolve_diff(&reviewer) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                let patch = match diff_parse::parse_diff(&resolved.diff) {
                     Ok(p) => p,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
@@ -712,7 +719,7 @@ impl App {
                     total_steps,
                     format!("Fetching source files for {name}..."),
                 ));
-                let source_files = match pr.fetch_source_files(&patch) {
+                let source_files = match pr.fetch_source_files(&patch, &resolved.diff_base) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
@@ -727,7 +734,8 @@ impl App {
                     total_steps,
                     format!("Rendering PDF for {name}..."),
                 ));
-                let review_data = ReviewData::build(pr, &reviewer, &patch, &source_files);
+                let review_data =
+                    ReviewData::build(pr, &reviewer, &patch, &source_files, &resolved);
                 let pdf = match Pdf::render(&review_data) {
                     Ok(p) => p,
                     Err(e) => {

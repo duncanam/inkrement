@@ -116,13 +116,24 @@
 
     #v(0.3in)
 
+    #let is-incremental = data.diff_mode == "incremental"
+    #if is-incremental [
+      #box(
+        inset: (x: 8pt, y: 4pt),
+        radius: 3pt,
+        fill: rgb("#e6f0ff"),
+        stroke: 0.5pt + rgb("#4488cc"),
+      )[#text(size: 9pt, weight: "bold", fill: rgb("#4488cc"))[Incremental Review]]
+      #v(10pt)
+    ]
+
     #grid(
       columns: (1in, 1fr),
       row-gutter: 10pt,
       text(size: 9pt, fill: gray)[Pull Request], text(size: 9pt, weight: "bold")[#data.repo \##str(data.number)],
       text(size: 9pt, fill: gray)[Author], text(size: 9pt, weight: "bold")[#data.author],
       text(size: 9pt, fill: gray)[Reviewer], text(size: 9pt, weight: "bold")[#data.reviewer],
-      text(size: 9pt, fill: gray)[Base], raw(data.base_ref),
+      text(size: 9pt, fill: gray)[#if is-incremental [Since] else [Base]], raw(data.diff_base),
       text(size: 9pt, fill: gray)[Head], raw(data.head_ref),
       text(size: 9pt, fill: gray)[Added], text(size: 9pt, fill: green, weight: "bold")[+#str(data.lines_added) lines],
       text(size: 9pt, fill: gray)[Removed], text(size: 9pt, fill: red, weight: "bold")[-#str(data.lines_removed) lines],
