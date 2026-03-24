@@ -107,7 +107,10 @@ struct ReviewComment {
 impl From<&Annotation> for ReviewComment {
     fn from(annotation: &Annotation) -> Self {
         Self {
-            path: annotation.path.clone(),
+            path: annotation
+                .path
+                .clone()
+                .expect("ReviewComment requires a path"),
             line: annotation.line,
             side: match annotation.side {
                 DiffSide::Left => "LEFT".to_string(),
@@ -130,19 +133,23 @@ struct ReviewPayload {
 pub(crate) fn post_review(target: &ReviewTarget, review: &InterpretedReview) -> Result<()> {
     let event = ReviewEvent::from(&review.decision);
 
+    // Inline comments require both a path and a line number
     let comments: Vec<ReviewComment> = review
         .annotations
         .iter()
-        .filter(|a| a.line.is_some()) // GitHub requires a line number for inline comments
+        .filter(|a| a.path.is_some() && a.line.is_some())
         .map(ReviewComment::from)
         .collect();
 
-    // Annotations without line numbers become part of the review body
+    // Everything else becomes part of the review body
     let body_comments: Vec<String> = review
         .annotations
         .iter()
-        .filter(|a| a.line.is_none())
-        .map(|a| format!("**{}**: {}", a.path, a.body))
+        .filter(|a| a.path.is_none() || a.line.is_none())
+        .map(|a| match &a.path {
+            Some(path) => format!("**{path}**: {}", a.body),
+            None => a.body.clone(),
+        })
         .collect();
 
     let body = if body_comments.is_empty() {
