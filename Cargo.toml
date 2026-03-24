@@ -9,10 +9,12 @@ color-eyre = "0.6.5"
 crossterm = "0.29.0"
 itertools = "0.14.0"
 lopdf = "0.40.0"
+pulldown-cmark = { version = "0.13.3", default-features = false }
 ratatui = "0.30.0"
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+tempfile = "3.27.0"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 typst = "0.14.2"

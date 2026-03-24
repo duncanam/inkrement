@@ -46,8 +46,13 @@ fn fetch_file_at_ref(repo_name: &str, path: &str, git_ref: &str) -> Result<Strin
 }
 
 impl PullRequest {
-    /// Fetches the old and new source files for all files in the given diff
-    pub(crate) fn fetch_source_files(&self, patch: &PatchSet) -> Result<SourceFiles> {
+    /// Fetches the old and new source files for all files in the given diff.
+    /// `diff_base` is the commit ref for the "old" side (PR base or last reviewed commit).
+    pub(crate) fn fetch_source_files(
+        &self,
+        patch: &PatchSet,
+        diff_base: &str,
+    ) -> Result<SourceFiles> {
         let old = patch
             .files()
             .iter()
@@ -59,7 +64,7 @@ impl PullRequest {
                     .unwrap_or(&file.source_file)
                     .to_string();
 
-                let content = fetch_file_at_ref(&self.repo_name, &path, &self.base_ref_oid)
+                let content = fetch_file_at_ref(&self.repo_name, &path, diff_base)
                     .wrap_err_with(|| format!("failed to fetch old version of {path}"))?;
 
                 Ok(SourceFile { path, content })

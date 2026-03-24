@@ -2,9 +2,9 @@ use std::process::Command;
 
 use color_eyre::eyre::{Context, Result, eyre};
 use itertools::Itertools;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{pdf::Pdf, review_data::ReviewData};
+use crate::{diff_parse, pdf::Pdf, review_data::ReviewData};
 
 /// Tag embedded in PDF filenames to identify inkrement documents
 pub(crate) const INKREMENT_TAG: &str = "inkrement";
@@ -72,6 +72,7 @@ fn fetch_current_user() -> Result<String> {
 struct PullRequestResponse {
     number: u32,
     title: String,
+    body: String,
     author: GitHubUser,
     additions: usize,
     deletions: usize,
@@ -84,6 +85,39 @@ struct GitHubUser {
     login: String,
 }
 
+/// A review from the GitHub pull request reviews API
+#[derive(Debug, Deserialize)]
+struct Review {
+    user: GitHubUser,
+    commit_id: String,
+    state: String,
+}
+
+/// Whether the diff covers the full PR or only changes since the last review
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DiffMode {
+    Full,
+    Incremental,
+}
+
+/// A resolved diff: the diff content, effective base commit, and mode
+#[derive(Debug)]
+pub(crate) struct ResolvedDiff {
+    pub(crate) diff: String,
+    pub(crate) diff_base: String,
+    pub(crate) mode: DiffMode,
+}
+
+/// Find the commit SHA of the reviewer's most recent submitted review.
+/// Returns `None` if the reviewer has no submitted (non-pending) reviews.
+fn find_last_reviewed_commit<'a>(reviews: &'a [Review], reviewer: &str) -> Option<&'a str> {
+    reviews
+        .iter()
+        .rfind(|r| r.user.login == reviewer && r.state != "PENDING")
+        .map(|r| r.commit_id.as_str())
+}
+
 /// A pull request and its metadata
 ///
 /// # Note
@@ -94,6 +128,7 @@ struct GitHubUser {
 pub(crate) struct PullRequest {
     pub(crate) number: u32,
     pub(crate) title: String,
+    pub(crate) body: String,
     pub(crate) repo_name: String,
     pub(crate) author: String,
     pub(crate) additions: usize,
@@ -123,8 +158,8 @@ impl PullRequest {
         )
     }
 
-    /// Fetch the git diff for a specific pull request
-    pub(crate) fn fetch_diff(&self) -> Result<String> {
+    /// Fetch the full PR diff (base to head)
+    fn fetch_full_diff(&self) -> Result<String> {
         let output = Command::new("gh")
             .args([
                 "pr",
@@ -134,12 +169,12 @@ impl PullRequest {
                 &self.repo_name,
             ])
             .output()
-            .wrap_err("failed to run gh CLI while attempting to get git diff")?;
+            .wrap_err("failed to run gh CLI while attempting to get full diff")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(eyre!(
-                "while getting git diff, gh pr diff failed for {}#{}: {stderr}",
+                "gh pr diff failed for {}#{}: {stderr}",
                 self.repo_name,
                 self.number
             ));
@@ -148,11 +183,94 @@ impl PullRequest {
         String::from_utf8(output.stdout).wrap_err("gh pr diff returned invalid UTF-8")
     }
 
+    /// Fetch an incremental diff between a base commit and the PR head
+    fn fetch_compare_diff(&self, base: &str) -> Result<String> {
+        let api_path = format!(
+            "/repos/{}/compare/{}...{}",
+            self.repo_name, base, self.head_ref_oid
+        );
+        let output = Command::new("gh")
+            .args([
+                "api",
+                &api_path,
+                "-H",
+                "Accept: application/vnd.github.diff",
+            ])
+            .output()
+            .wrap_err("failed to run gh CLI while fetching compare diff")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "gh compare diff failed for {}#{}  ({base}...{}): {stderr}",
+                self.repo_name,
+                self.number,
+                self.head_ref_oid
+            ));
+        }
+
+        String::from_utf8(output.stdout).wrap_err("compare diff returned invalid UTF-8")
+    }
+
+    /// Fetch reviews for this PR from the GitHub API
+    fn fetch_reviews(&self) -> Result<Vec<Review>> {
+        let api_path = format!("/repos/{}/pulls/{}/reviews", self.repo_name, self.number);
+        let output = Command::new("gh")
+            .args(["api", &api_path])
+            .output()
+            .wrap_err("failed to run gh CLI while fetching reviews")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(eyre!(
+                "gh api failed fetching reviews for {}#{}: {stderr}",
+                self.repo_name,
+                self.number
+            ));
+        }
+
+        serde_json::from_slice(&output.stdout).wrap_err("failed to parse reviews response")
+    }
+
+    /// Resolve which diff to show: incremental since last review, or full PR diff.
+    /// Falls back to full diff if there is no prior review or if the compare fails
+    /// (e.g. after a force push).
+    pub(crate) fn resolve_diff(&self, reviewer: &str) -> Result<ResolvedDiff> {
+        let reviews = self
+            .fetch_reviews()
+            .wrap_err("could not fetch reviews for incremental diff")?;
+
+        if let Some(commit) = find_last_reviewed_commit(&reviews, reviewer) {
+            match self.fetch_compare_diff(commit) {
+                Ok(diff) => {
+                    return Ok(ResolvedDiff {
+                        diff,
+                        diff_base: commit.to_string(),
+                        mode: DiffMode::Incremental,
+                    });
+                }
+                Err(_) => {
+                    // Compare failed (likely force push removed the commit), fall through to full diff
+                }
+            }
+        }
+
+        let diff = self
+            .fetch_full_diff()
+            .wrap_err("could not fetch full diff as fallback")?;
+        Ok(ResolvedDiff {
+            diff,
+            diff_base: self.base_ref_oid.clone(),
+            mode: DiffMode::Full,
+        })
+    }
+
     /// Render the PR to a PDF
     pub(crate) fn render_to_pdf(&self, reviewer: &str) -> Result<Pdf> {
-        let patch = self.parse_diff()?;
-        let source_files = self.fetch_source_files(&patch)?;
-        let review_data = ReviewData::build(self, reviewer, &patch, &source_files);
+        let resolved = self.resolve_diff(reviewer)?;
+        let patch = diff_parse::parse_diff(&resolved.diff)?;
+        let source_files = self.fetch_source_files(&patch, &resolved.diff_base)?;
+        let review_data = ReviewData::build(self, reviewer, &patch, &source_files, &resolved);
         Pdf::render(&review_data)
     }
 }
@@ -171,7 +289,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
                 "--repo",
                 repo_name,
                 "--json",
-                "number,title,author,additions,deletions,headRefOid,baseRefOid",
+                "number,title,body,author,additions,deletions,headRefOid,baseRefOid",
             ])
             .output()
             .wrap_err("failed to run gh CLI while fetching pull requests")?;
@@ -191,6 +309,7 @@ impl TryFrom<SearchPullRequest> for PullRequest {
         Ok(PullRequest {
             number: resp.number,
             title: resp.title,
+            body: resp.body,
             repo_name: repo_name.to_string(),
             author: resp.author.login,
             additions: resp.additions,
@@ -277,11 +396,203 @@ mod tests {
         assert!(item.get_repo_name().is_err());
     }
 
+    // ========================================================================
+    // Review resolution
+    // ========================================================================
+
+    #[test]
+    fn find_last_reviewed_single_review() {
+        let reviews = [Review {
+            user: GitHubUser {
+                login: "alice".to_string(),
+            },
+            commit_id: "abc123".to_string(),
+            state: "APPROVED".to_string(),
+        }];
+        assert_eq!(find_last_reviewed_commit(&reviews, "alice"), Some("abc123"));
+    }
+
+    #[test]
+    fn find_last_reviewed_returns_most_recent() {
+        let reviews = [
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "first".to_string(),
+                state: "COMMENTED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "second".to_string(),
+                state: "APPROVED".to_string(),
+            },
+        ];
+        assert_eq!(find_last_reviewed_commit(&reviews, "alice"), Some("second"));
+    }
+
+    #[test]
+    fn find_last_reviewed_empty_reviews() {
+        let reviews: [Review; 0] = [];
+        assert_eq!(find_last_reviewed_commit(&reviews, "alice"), None);
+    }
+
+    #[test]
+    fn find_last_reviewed_no_matching_reviewer() {
+        let reviews = [Review {
+            user: GitHubUser {
+                login: "bob".to_string(),
+            },
+            commit_id: "abc123".to_string(),
+            state: "APPROVED".to_string(),
+        }];
+        assert_eq!(find_last_reviewed_commit(&reviews, "alice"), None);
+    }
+
+    #[test]
+    fn find_last_reviewed_skips_pending() {
+        let reviews = [
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "submitted".to_string(),
+                state: "APPROVED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "pending".to_string(),
+                state: "PENDING".to_string(),
+            },
+        ];
+        assert_eq!(
+            find_last_reviewed_commit(&reviews, "alice"),
+            Some("submitted")
+        );
+    }
+
+    #[test]
+    fn find_last_reviewed_filters_by_reviewer() {
+        let reviews = [
+            Review {
+                user: GitHubUser {
+                    login: "bob".to_string(),
+                },
+                commit_id: "bob_commit".to_string(),
+                state: "APPROVED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "alice_first".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "bob".to_string(),
+                },
+                commit_id: "bob_second".to_string(),
+                state: "APPROVED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "alice_second".to_string(),
+                state: "APPROVED".to_string(),
+            },
+        ];
+        assert_eq!(
+            find_last_reviewed_commit(&reviews, "alice"),
+            Some("alice_second")
+        );
+    }
+
+    #[test]
+    fn find_last_reviewed_all_non_pending_states_count() {
+        let reviews = [
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "c1".to_string(),
+                state: "COMMENTED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "c2".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "c3".to_string(),
+                state: "APPROVED".to_string(),
+            },
+            Review {
+                user: GitHubUser {
+                    login: "alice".to_string(),
+                },
+                commit_id: "c4".to_string(),
+                state: "DISMISSED".to_string(),
+            },
+        ];
+        assert_eq!(find_last_reviewed_commit(&reviews, "alice"), Some("c4"));
+    }
+
+    #[test]
+    fn parse_reviews_api_response() {
+        let json = r#"[
+            {
+                "id": 1,
+                "user": {"login": "alice"},
+                "commit_id": "abc123def456",
+                "state": "APPROVED",
+                "submitted_at": "2024-01-15T10:30:00Z",
+                "body": "Looks good!"
+            },
+            {
+                "id": 2,
+                "user": {"login": "bob"},
+                "commit_id": "789fed321cba",
+                "state": "CHANGES_REQUESTED",
+                "submitted_at": "2024-01-15T11:00:00Z",
+                "body": "Please fix the error handling"
+            }
+        ]"#;
+
+        let reviews: Vec<Review> = serde_json::from_str(json).unwrap();
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].user.login, "alice");
+        assert_eq!(reviews[0].commit_id, "abc123def456");
+        assert_eq!(reviews[0].state, "APPROVED");
+        assert_eq!(reviews[1].user.login, "bob");
+        assert_eq!(reviews[1].state, "CHANGES_REQUESTED");
+    }
+
+    #[test]
+    fn diff_mode_serializes_to_snake_case() {
+        assert_eq!(serde_json::to_string(&DiffMode::Full).unwrap(), "\"full\"");
+        assert_eq!(
+            serde_json::to_string(&DiffMode::Incremental).unwrap(),
+            "\"incremental\""
+        );
+    }
+
     #[test]
     fn parse_pull_request_response() {
         let json = r#"{
             "number": 42,
             "title": "Add widget endpoint",
+            "body": "Adds the /widgets REST endpoint.\n\nCloses #41",
             "author": {"login": "jsmith"},
             "additions": 150,
             "deletions": 30,
@@ -292,6 +603,7 @@ mod tests {
         let resp: PullRequestResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.number, 42);
         assert_eq!(resp.title, "Add widget endpoint");
+        assert_eq!(resp.body, "Adds the /widgets REST endpoint.\n\nCloses #41");
         assert_eq!(resp.author.login, "jsmith");
         assert_eq!(resp.additions, 150);
         assert_eq!(resp.deletions, 30);

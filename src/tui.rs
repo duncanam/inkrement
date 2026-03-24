@@ -10,7 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use itertools::Itertools;
 
 use crate::{
-    annotate,
+    annotate, diff_parse,
     pdf::Pdf,
     pdf_strip,
     post_review::{self, ReviewTarget},
@@ -276,8 +276,6 @@ impl DocRow {
 
 /// Messages sent from background threads to the TUI event loop.
 enum BackgroundMessage {
-    /// A status update to display while loading (e.g. "Fetching PRs from GitHub...").
-    LoadingStatus(String),
     /// GitHub PR data has been fetched (or failed).
     PrsLoaded(Result<PullRequests>),
     /// reMarkable connection + document listing result.
@@ -338,6 +336,8 @@ pub(crate) struct App {
     loading_pending: usize,
     /// Active progress indicator, if a background operation is running.
     progress: Option<Progress>,
+    /// Error message shown as a red popup overlay, dismissed with Escape.
+    error_message: Option<String>,
     /// Set to true when the user presses 'q' to exit.
     should_quit: bool,
 }
@@ -365,6 +365,7 @@ impl App {
             loading_message: Some("Starting up...".to_string()),
             loading_pending: 0,
             progress: None,
+            error_message: None,
             should_quit: false,
         };
 
@@ -394,9 +395,6 @@ impl App {
     fn process_background_messages(&mut self) {
         while let Ok(msg) = self.bg_rx.try_recv() {
             match msg {
-                BackgroundMessage::LoadingStatus(message) => {
-                    self.loading_message = Some(message);
-                }
                 BackgroundMessage::PrsLoaded(result) => {
                     match result {
                         Ok(pull_requests) => {
@@ -423,7 +421,7 @@ impl App {
                             self.pull_requests = Some(pull_requests);
                         }
                         Err(e) => {
-                            self.loading_message = Some(format!("Failed to load PRs: {e}"));
+                            self.error_message = Some(format!("Failed to load PRs: {e}"));
                         }
                     }
                     self.check_loading_complete();
@@ -459,11 +457,9 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            self.loading_message =
-                                Some(format!("reMarkable connection failed: {e}"));
+                            self.error_message = Some(format!("reMarkable connection failed: {e}"));
                         }
                     }
-                    self.check_loading_complete();
                 }
                 BackgroundMessage::UploadProgress(current_step, total_steps, message) => {
                     self.progress = Some(Progress {
@@ -482,7 +478,7 @@ impl App {
                 }
                 BackgroundMessage::UploadError(message) => {
                     self.progress = None;
-                    self.loading_message = Some(format!("Upload failed: {message}"));
+                    self.error_message = Some(message);
                 }
             }
         }
@@ -512,6 +508,12 @@ impl App {
 
         // Only handle key press events, not release
         if key.kind != KeyEventKind::Press {
+            return Ok(());
+        }
+
+        // Dismiss error popup on any key
+        if self.error_message.is_some() {
+            self.error_message = None;
             return Ok(());
         }
 
@@ -599,22 +601,16 @@ impl App {
             return;
         }
 
-        self.loading_message = Some("Refreshing...".to_string());
-        self.loading_pending = 2;
+        self.loading_message = Some("Fetching PRs from GitHub...".to_string());
+        self.loading_pending = 1;
 
         let tx_gh = self.bg_tx.clone();
         thread::spawn(move || {
-            let _ = tx_gh.send(BackgroundMessage::LoadingStatus(
-                "Fetching PRs from GitHub...".to_string(),
-            ));
             let _ = tx_gh.send(BackgroundMessage::PrsLoaded(PullRequests::fetch()));
         });
 
         let tx_rm = self.bg_tx.clone();
         thread::spawn(move || {
-            let _ = tx_rm.send(BackgroundMessage::LoadingStatus(
-                "Connecting to reMarkable...".to_string(),
-            ));
             let result = RemarkableClient::connect().and_then(|rm| {
                 let docs = rm.list_inkrement_documents()?;
                 let pairs = docs.into_iter().map(|d| (d.id, d.visible_name)).collect();
@@ -642,7 +638,7 @@ impl App {
     /// Begin processing all queued PRs (render PDFs + upload to reMarkable).
     fn execute_get(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
-            self.loading_message = Some("reMarkable not connected".to_string());
+            self.error_message = Some("reMarkable not connected".to_string());
             return;
         }
 
@@ -691,13 +687,20 @@ impl App {
             for (pr_index, pr) in &pr_data {
                 let name = format!("{}#{}", pr.repo_name, pr.number);
 
-                // Step 1: fetch diff
+                // Step 1: resolve diff (incremental if prior review exists)
                 let _ = tx.send(BackgroundMessage::UploadProgress(
                     step,
                     total_steps,
-                    format!("Fetching diff for {name}..."),
+                    format!("Resolving diff for {name}..."),
                 ));
-                let patch = match pr.parse_diff() {
+                let resolved = match pr.resolve_diff(&reviewer) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
+                        return;
+                    }
+                };
+                let patch = match diff_parse::parse_diff(&resolved.diff) {
                     Ok(p) => p,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
@@ -712,7 +715,7 @@ impl App {
                     total_steps,
                     format!("Fetching source files for {name}..."),
                 ));
-                let source_files = match pr.fetch_source_files(&patch) {
+                let source_files = match pr.fetch_source_files(&patch, &resolved.diff_base) {
                     Ok(s) => s,
                     Err(e) => {
                         let _ = tx.send(BackgroundMessage::UploadError(format!("{name}: {e}")));
@@ -727,7 +730,8 @@ impl App {
                     total_steps,
                     format!("Rendering PDF for {name}..."),
                 ));
-                let review_data = ReviewData::build(pr, &reviewer, &patch, &source_files);
+                let review_data =
+                    ReviewData::build(pr, &reviewer, &patch, &source_files, &resolved);
                 let pdf = match Pdf::render(&review_data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -763,7 +767,7 @@ impl App {
     /// Download, interpret, and post reviews for selected documents.
     fn execute_publish(&mut self) {
         if self.remarkable_status != RemarkableStatus::Connected {
-            self.loading_message = Some("reMarkable not connected".to_string());
+            self.error_message = Some("reMarkable not connected".to_string());
             return;
         }
 
@@ -801,14 +805,6 @@ impl App {
                 }
             };
 
-            let tmp_dir = std::env::temp_dir().join("inkrement");
-            if let Err(e) = std::fs::create_dir_all(&tmp_dir) {
-                let _ = tx.send(BackgroundMessage::UploadError(format!(
-                    "Failed to create temp dir: {e}"
-                )));
-                return;
-            }
-
             let mut step = 0;
 
             for (doc_id, name, full_name, ocr_pages) in &queued {
@@ -845,7 +841,16 @@ impl App {
                     }
                 };
 
-                let pdf_path = tmp_dir.join(format!("{name}.pdf"));
+                let tmp_dir = match tempfile::tempdir() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let _ = tx.send(BackgroundMessage::UploadError(format!(
+                            "Failed to create temp dir: {e}"
+                        )));
+                        return;
+                    }
+                };
+                let pdf_path = tmp_dir.path().join(format!("{name}.pdf"));
                 if let Err(e) = std::fs::write(&pdf_path, &stripped) {
                     let _ = tx.send(BackgroundMessage::UploadError(format!(
                         "Failed to save {}: {e}",
@@ -926,6 +931,48 @@ impl App {
         self.render_main(frame, chunks[2]);
         self.render_footer(frame, chunks[3]);
         self.render_progress(frame, chunks[4]);
+
+        if let Some(error) = &self.error_message {
+            self.render_error_popup(frame, error.clone());
+        }
+    }
+
+    /// Render a centered red error popup overlay.
+    fn render_error_popup(&self, frame: &mut Frame, message: String) {
+        let area = frame.area();
+
+        // Size the popup: up to 60% width, height based on wrapped text + padding
+        let popup_width = (area.width * 3 / 5)
+            .max(40)
+            .min(area.width.saturating_sub(4));
+        // Rough line count: wrap message to inner width (popup - borders - padding)
+        let inner_width = popup_width.saturating_sub(6) as usize;
+        let line_count = if inner_width > 0 {
+            message.as_bytes().chunks(inner_width).count().max(1)
+        } else {
+            1
+        };
+        let popup_height = (line_count as u16 + 4).min(area.height.saturating_sub(4));
+
+        let x = (area.width.saturating_sub(popup_width)) / 2;
+        let y = (area.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(ratatui::widgets::Clear, popup_area);
+
+        let block = Block::default()
+            .title(" Error ")
+            .title_style(Style::default().fg(Color::White).bold())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .style(Style::default().bg(Color::Black));
+
+        let text = Paragraph::new(message)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .style(Style::default().fg(Color::Red))
+            .block(block);
+
+        frame.render_widget(text, popup_area);
     }
 
     /// Render the version string and reMarkable connection status.

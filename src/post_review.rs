@@ -5,6 +5,8 @@ use serde::Serialize;
 
 use crate::annotate::{Annotation, DiffSide, InterpretedReview, ReviewDecision};
 
+const REVIEW_ATTRIBUTION: &str = "Review via [Inkrement](https://github.com/duncanam/inkrement)";
+
 /// Metadata parsed from an inkrement filename needed to post a review.
 pub(crate) struct ReviewTarget {
     /// Repository in "owner/repo" format.
@@ -144,9 +146,9 @@ pub(crate) fn post_review(target: &ReviewTarget, review: &InterpretedReview) -> 
         .collect();
 
     let body = if body_comments.is_empty() {
-        "Review via inkrement".to_string()
+        REVIEW_ATTRIBUTION.to_string()
     } else {
-        format!("Review via inkrement\n\n{}", body_comments.join("\n\n"))
+        format!("{REVIEW_ATTRIBUTION}\n\n{}", body_comments.join("\n\n"))
     };
 
     let payload = ReviewPayload {

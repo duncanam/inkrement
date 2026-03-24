@@ -1,7 +1,11 @@
 use serde::Serialize;
 use unidiff::{Hunk, Line, PatchSet, PatchedFile};
 
-use crate::{fetch_files::SourceFiles, pull_changes::PullRequest};
+use crate::{
+    fetch_files::SourceFiles,
+    markdown,
+    pull_changes::{DiffMode, PullRequest, ResolvedDiff},
+};
 
 /// Infer language name from file extension for Typst raw blocks
 fn lang_from_path(path: &str) -> &'static str {
@@ -41,12 +45,14 @@ fn lang_from_path(path: &str) -> &'static str {
 #[derive(Debug, Serialize)]
 pub(crate) struct ReviewData<'a> {
     title: &'a str,
+    description: String,
     repo: &'a str,
     number: u32,
     author: &'a str,
     reviewer: &'a str,
-    base_ref: &'a str,
+    diff_base: &'a str,
     head_ref: &'a str,
+    diff_mode: &'a DiffMode,
     lines_added: usize,
     lines_removed: usize,
     files: Box<[FileData<'a>]>,
@@ -59,6 +65,7 @@ impl<'a> ReviewData<'a> {
         reviewer: &'a str,
         patch: &'a PatchSet,
         source_files: &'a SourceFiles,
+        resolved: &'a ResolvedDiff,
     ) -> Self {
         let files: Box<_> = patch
             .files()
@@ -72,12 +79,14 @@ impl<'a> ReviewData<'a> {
 
         Self {
             title: &pr.title,
+            description: markdown::markdown_to_typst(&pr.body),
             repo: &pr.repo_name,
             number: pr.number,
             author: &pr.author,
             reviewer,
-            base_ref: &pr.base_ref_oid,
+            diff_base: &resolved.diff_base,
             head_ref: &pr.head_ref_oid,
+            diff_mode: &resolved.mode,
             lines_added,
             lines_removed,
             files,
