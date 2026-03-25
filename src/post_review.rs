@@ -1,7 +1,8 @@
-use std::process::Command;
+use std::{collections::HashSet, process::Command};
 
 use color_eyre::eyre::{Context, Result, eyre};
 use serde::Serialize;
+use unidiff::PatchSet;
 
 use crate::annotate::{Annotation, DiffSide, InterpretedReview, ReviewDecision};
 
@@ -104,23 +105,6 @@ struct ReviewComment {
     body: String,
 }
 
-impl From<&Annotation> for ReviewComment {
-    fn from(annotation: &Annotation) -> Self {
-        Self {
-            path: annotation
-                .path
-                .clone()
-                .expect("ReviewComment requires a path"),
-            line: annotation.line,
-            side: match annotation.side {
-                DiffSide::Left => "LEFT".to_string(),
-                DiffSide::Right => "RIGHT".to_string(),
-            },
-            body: annotation.body.clone(),
-        }
-    }
-}
-
 /// The full review payload for the GitHub API.
 #[derive(Serialize)]
 struct ReviewPayload {
@@ -129,26 +113,106 @@ struct ReviewPayload {
     comments: Vec<ReviewComment>,
 }
 
+/// Fetch the diff for a PR and return the set of valid (path, line, side) positions.
+/// GitHub only accepts inline comments on lines that appear in the diff.
+fn fetch_valid_positions(target: &ReviewTarget) -> Result<HashSet<(String, usize, String)>> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "diff",
+            &target.number.to_string(),
+            "--repo",
+            &target.repo,
+        ])
+        .output()
+        .wrap_err("failed to fetch diff for review validation")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("gh pr diff failed: {stderr}"));
+    }
+
+    let diff = String::from_utf8(output.stdout).wrap_err("diff is not valid UTF-8")?;
+    let mut patch = PatchSet::new();
+    patch.parse(&diff).wrap_err("failed to parse diff")?;
+
+    let mut positions = HashSet::new();
+    for file in patch.files() {
+        let path = file.path();
+        for hunk in file.hunks() {
+            for line in hunk.lines() {
+                if let Some(no) = line.source_line_no {
+                    positions.insert((path.clone(), no, "LEFT".to_string()));
+                }
+                if let Some(no) = line.target_line_no {
+                    positions.insert((path.clone(), no, "RIGHT".to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(positions)
+}
+
+/// Resolve the correct side for an annotation against the diff.
+/// Returns the side string if the line is in the diff, preferring the annotated side
+/// but falling back to the other side if needed. Returns `None` if the line doesn't
+/// exist on either side.
+fn resolve_side(
+    annotation: &Annotation,
+    valid_positions: &HashSet<(String, usize, String)>,
+) -> Option<String> {
+    let (path, line) = (annotation.path.as_ref()?, annotation.line?);
+    let (preferred, other) = match annotation.side {
+        DiffSide::Left => ("LEFT", "RIGHT"),
+        DiffSide::Right => ("RIGHT", "LEFT"),
+    };
+    if valid_positions.contains(&(path.clone(), line, preferred.to_string())) {
+        Some(preferred.to_string())
+    } else if valid_positions.contains(&(path.clone(), line, other.to_string())) {
+        Some(other.to_string())
+    } else {
+        None
+    }
+}
+
 /// Post an interpreted review to GitHub.
 pub(crate) fn post_review(target: &ReviewTarget, review: &InterpretedReview) -> Result<()> {
     let event = ReviewEvent::from(&review.decision);
 
-    // Inline comments require both a path and a line number
-    let comments: Vec<ReviewComment> = review
-        .annotations
-        .iter()
-        .filter(|a| a.path.is_some() && a.line.is_some())
-        .map(ReviewComment::from)
-        .collect();
+    let valid_positions = fetch_valid_positions(target)
+        .wrap_err("could not validate comment positions against diff")?;
 
-    // Everything else becomes part of the review body
-    let body_comments: Vec<String> = review
-        .annotations
+    // Resolve each annotation against the diff, correcting the side if needed
+    let mut comments = Vec::new();
+    let mut unresolvable = Vec::new();
+
+    for annotation in &review.annotations {
+        if let Some(resolved_side) = resolve_side(annotation, &valid_positions) {
+            comments.push(ReviewComment {
+                path: annotation
+                    .path
+                    .clone()
+                    .expect("resolved annotation has path"),
+                line: annotation.line,
+                side: resolved_side,
+                body: annotation.body.clone(),
+            });
+        } else {
+            unresolvable.push(annotation);
+        }
+    }
+
+    // Unresolvable annotations become part of the review body
+    let body_comments: Vec<String> = unresolvable
         .iter()
-        .filter(|a| a.path.is_none() || a.line.is_none())
-        .map(|a| match &a.path {
-            Some(path) => format!("**{path}**: {}", a.body),
-            None => a.body.clone(),
+        .map(|a| match (&a.path, a.line) {
+            (Some(path), Some(line)) => format!(
+                "**{path}** (line {line}, could not resolve in diff): {}",
+                a.body
+            ),
+            (Some(path), None) => format!("**{path}**: {}", a.body),
+            _ => a.body.clone(),
         })
         .collect();
 
@@ -190,7 +254,8 @@ pub(crate) fn post_review(target: &ReviewTarget, review: &InterpretedReview) -> 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(eyre!("gh api failed: {stderr}"));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(eyre!("gh api failed: {stderr}\nResponse: {stdout}"));
     }
 
     Ok(())
