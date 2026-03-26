@@ -18,7 +18,8 @@ pub(crate) enum ReviewDecision {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Annotation {
     /// The file path this annotation refers to.
-    pub path: String,
+    /// None if the annotation is a general comment not tied to a specific file.
+    pub path: Option<String>,
     /// The line number from the margin of the section the annotation targets.
     /// If side is "left", this is the old file's line number.
     /// If side is "right", this is the new file's line number.
@@ -105,9 +106,14 @@ surrounding code context to infer intent when uncertain.
   Approve, Request Changes, Comment Only.
   Look for a handwritten check mark, X, or fill in one of the boxes.
 
-- **Page 2**: Files changed listing (no annotations expected here).
+- **Description page(s)**: The PR description rendered as text. May span
+  multiple pages. The reviewer may write general comments here -- capture
+  these with path and line set to null.
 
-- **Remaining pages before "REFERENCE SOURCE CODE"**: Diff review pages.
+- **Files Changed page**: A listing of changed files. The reviewer may
+  write general comments here -- capture these with path and line set to null.
+
+- **Diff pages** (before "REFERENCE SOURCE CODE"): The core review pages.
   Each page shows:
   - A file path and hunk ID (e.g. [H1]) at the top
   - A "Removed" section showing OLD code with OLD line numbers in the left margin
@@ -119,7 +125,7 @@ surrounding code context to infer intent when uncertain.
 
 ## What to look for
 
-On each diff page, identify all handwritten annotations:
+On every page before "REFERENCE SOURCE CODE", identify all handwritten annotations:
 - Written text (comments, questions, suggestions, code corrections)
 - Arrows pointing from a comment to a specific line of code
 - Highlights, underlines, or circles around code
@@ -152,12 +158,18 @@ Respond with ONLY valid JSON matching this exact schema:
       "line": 42,
       "side": "RIGHT",
       "body": "This should validate the input first"
+    },
+    {
+      "path": null,
+      "line": null,
+      "side": "RIGHT",
+      "body": "General comment not tied to a specific file"
     }
   ]
 }
 
 If no checkbox is clearly marked, use "unclear".
-If there are no handwritten annotations on the diff pages, return an empty array.
+If there are no handwritten annotations, return an empty annotations array.
 "#;
 
 /// Send an annotated PDF to Claude for OCR interpretation.
@@ -168,18 +180,16 @@ pub(crate) fn interpret_pdf(pdf_path: &std::path::Path) -> Result<InterpretedRev
     let parent_dir = pdf_path
         .parent()
         .ok_or_else(|| eyre!("PDF path has no parent directory"))?;
+    let file_name = pdf_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| eyre!("PDF path has no valid filename"))?;
+
+    let prompt_with_file = format!("{PROMPT}\n\n@{file_name}");
 
     let output = Command::new("claude")
         .current_dir(parent_dir)
-        .args([
-            "-p",
-            PROMPT,
-            "--output-format",
-            "json",
-            pdf_path
-                .to_str()
-                .ok_or_else(|| eyre!("PDF path is not valid UTF-8"))?,
-        ])
+        .args(["-p", &prompt_with_file, "--output-format", "json"])
         .output()
         .wrap_err("failed to run claude CLI -- is it installed and authenticated?")?;
 
